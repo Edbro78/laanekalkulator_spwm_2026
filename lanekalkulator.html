@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="nb">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lånekalkulator — Söderberg &amp; Partners Wealth Management</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css">
+<style>
+  :root{
+    --sp-navy:#002359; --blue-main:#0A5EDC; --blue-pressed:#074EB9;
+    --blue-soft:#E8F0FD; --blue-2:#9BC0F5; --violet:#9747FF;
+    --gray-25:#FCFCFD; --gray-50:#F9FAFB; --gray-100:#F2F4F7; --gray-200:#EAECF0;
+    --gray-300:#D0D5DD; --gray-400:#98A2B3; --gray-500:#667085; --gray-600:#475467;
+    --gray-700:#344054; --gray-900:#101828;
+    --secondary-25:#F6F7F9; --secondary-800:#264472; --error-700:#B42318;
+    --font-sans:"Hanken Grotesk","Whitney","Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;padding:0;overflow:hidden;}
+  body{
+    background:var(--gray-50); color:var(--sp-navy);
+    font-family:var(--font-sans); font-size:13px;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  #root{height:100%;}
+  button,input,select{font-family:inherit;}
+  input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--blue-main);outline-offset:1px;}
+
+  /* ---------- scrollbars ---------- */
+  ::-webkit-scrollbar{width:9px;height:9px;}
+  ::-webkit-scrollbar-thumb{background:var(--gray-300);border-radius:10px;border:2px solid var(--gray-50);}
+  ::-webkit-scrollbar-track{background:transparent;}
+
+  /* ---------- range sliders ---------- */
+  .rng{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:100px;background:var(--gray-200);outline:none;margin:4px 0;display:block;}
+  .rng::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:1.5px solid var(--blue-main);box-shadow:0 1px 3px rgba(16,24,40,.16);cursor:pointer;}
+  .rng::-moz-range-thumb{width:17px;height:17px;border-radius:50%;background:#fff;border:1.5px solid var(--blue-main);box-shadow:0 1px 3px rgba(16,24,40,.16);cursor:pointer;}
+  .rng::-moz-range-track{height:4px;border-radius:100px;background:var(--gray-200);}
+
+  /* ---------- number inputs ---------- */
+  .num{width:100%;height:32px;border:1px solid var(--gray-300);border-radius:8px;background:#fff;
+    padding:0 30px 0 10px;font-size:13.5px;font-weight:500;color:var(--gray-900);
+    font-variant-numeric:tabular-nums;transition:border-color .15s,box-shadow .15s;}
+  .num:focus{border-color:var(--blue-main);box-shadow:0 0 0 3px rgba(10,94,220,.16);outline:none;}
+  .num::-webkit-outer-spin-button,.num::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+  .num[type=number]{-moz-appearance:textfield;}
+  .sel{width:100%;height:32px;border:1px solid var(--gray-300);border-radius:8px;background:#fff;
+    padding:0 32px 0 10px;font-size:13.5px;font-weight:500;color:var(--gray-900);
+    -webkit-appearance:none;appearance:none;cursor:pointer;}
+  .sel:focus{border-color:var(--blue-main);box-shadow:0 0 0 3px rgba(10,94,220,.16);outline:none;}
+
+  /* ---------- tables ---------- */
+  .tbl{width:100%;border-collapse:collapse;}
+  .tbl th{position:sticky;top:0;z-index:1;background:var(--gray-50);
+    font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--gray-500);
+    text-align:right;padding:8px 10px;white-space:nowrap;border-bottom:1px solid var(--gray-200);}
+  .tbl td{font-size:12.5px;color:var(--sp-navy);text-align:right;padding:7px 10px;white-space:nowrap;
+    font-variant-numeric:tabular-nums;border-bottom:1px solid var(--gray-100);}
+  .tbl th.l,.tbl td.l{text-align:left;}
+  .tbl tbody tr:hover td{background:#F5F9FF;}
+  .tbl tfoot td{position:sticky;bottom:0;z-index:1;background:#fff;font-weight:600;font-size:12.5px;
+    border-top:1px solid var(--gray-200);border-bottom:none;box-shadow:0 -1px 0 var(--gray-200);}
+  .tbl tbody tr:hover tfoot td{background:#fff;}
+
+  .lnk{background:none;border:none;padding:0;cursor:pointer;color:var(--blue-main);
+    font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:4px;}
+  .lnk:hover{color:var(--blue-pressed);}
+
+  @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect } = React;
+
+/* ============================================================================
+   Farger og tokens
+   ========================================================================== */
+const C = {
+  navy: "#002359", blue: "#0A5EDC", blueDark: "#074EB9", blueSoft: "#E8F0FD",
+  blue2: "#9BC0F5", violet: "#9747FF", canvas: "#F9FAFB", border: "#EAECF0",
+  inputBorder: "#D0D5DD", text: "#475467", text2: "#667085", text3: "#98A2B3",
+  strong: "#101828", label: "#344054", zebra: "#FCFCFD", track: "#F6F7F9",
+  sec800: "#264472", red: "#B42318",
+};
+
+/* ============================================================================
+   Formattering (nb-NO)
+   ========================================================================== */
+const grp = n => {
+  const neg = n < 0;
+  const s = Math.abs(Math.round(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return (neg ? "−" : "") + s;
+};
+const nok = v => grp(Number.isFinite(v) ? v : 0) + " kr";
+const pct = v => (Number.isFinite(v) ? v : 0).toFixed(2).replace(".", ",") + " %";
+const pct1 = v => (Number.isFinite(v) ? v : 0).toFixed(1).replace(".", ",") + " %";
+const pct0 = v => Math.round(Number.isFinite(v) ? v : 0) + " %";
+
+/* ============================================================================
+   Beregningsmotor
+   ========================================================================== */
+const termCount = s => Math.max(1, Math.round(s.years * s.ppy));
+
+function yearRateList(s) {
+  return Array.from({ length: s.years }, (_, y) => {
+    if (s.yearRates && s.yearRates[y] != null) return s.yearRates[y];
+    if (s.yearRates && s.yearRates.length) return s.yearRates[s.yearRates.length - 1];
+    return s.rate;
+  });
+}
+
+function rateSeries(s, adv) {
+  const n = termCount(s);
+  if (!adv || !s.stepsOn) return new Array(n).fill(s.rate);
+  const per = yearRateList(s);
+  return Array.from({ length: n }, (_, m) => per[Math.min(per.length - 1, Math.floor(m / s.ppy))]);
+}
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+/* Løpetiden kan velges fra 1 til 30 år */
+const YEARS_MIN = 1, YEARS_MAX = 30;
+
+/* Maks avdragsfrihet: 10 år / 120 mnd, men aldri hele løpetiden */
+function graceMaxFor(unit, years) {
+  return unit === "år"
+    ? Math.max(0, Math.min(10, years - 1))
+    : Math.max(0, Math.min(120, Math.round(years * 12) - 1));
+}
+
+function graceTerms(s) {
+  const t = s.graceUnit === "år" ? s.grace * s.ppy : Math.round(s.grace * s.ppy / 12);
+  return Math.max(0, Math.min(Math.round(t), Math.max(0, termCount(s) - 1)));
+}
+
+function assetAt(s, term) {
+  if (s.scenario === "fall") return s.assetValue * 0.9;
+  if (s.scenario === "growth") return s.assetValue * Math.pow(1.02, term / s.ppy);
+  return s.assetValue;
+}
+
+function ltvDiscount(s, balance, term, adv) {
+  if (!adv || !s.ltvOn) return 0;
+  const a = assetAt(s, term);
+  if (!(a > 0)) return 0;
+  const ltv = balance / a * 100;
+  if (ltv <= 60) return 0.75;
+  if (ltv <= 75) return 0.50;
+  if (ltv <= 85) return 0.25;
+  return 0;
+}
+
+function schedule(s, adv) {
+  const n = termCount(s);
+  const rates = rateSeries(s, adv);
+  const g = graceTerms(s), amortN = Math.max(1, n - g);
+  let balance = s.amount, ann = 0;
+  const rows = [];
+  for (let m = 1; m <= n; m++) {
+    const eff = Math.max(0, rates[m - 1] - ltvDiscount(s, balance, m - 1, adv));
+    const r = eff / 100 / s.ppy;
+    const interest = balance * r;
+    let principal = 0;
+    if (m > g) {
+      const left = n - m + 1;
+      if (s.type === "annuitet") {
+        if (m === g + 1 || rates[m - 1] !== rates[m - 2]) {
+          ann = r > 0 ? balance * r / (1 - Math.pow(1 + r, -left)) : balance / left;
+        }
+        principal = ann - interest;
+      } else {
+        principal = s.amount / amortN;
+      }
+    }
+    if (m === n || principal > balance) principal = balance;
+    if (principal < 0) principal = 0;
+    balance -= principal;
+    rows.push({
+      m, interest, principal, term: interest + principal + s.fee,
+      balance: Math.max(0, balance), grace: m <= g,
+      rate: rates[m - 1], effRate: eff,
+    });
+  }
+  return rows;
+}
+
+/* Effektiv rente — binærsøk (80 iterasjoner) på IRR, deretter annualisert */
+function effectiveRate(rows, net, ppy) {
+  if (!(net > 0)) return 0;
+  const f = i => rows.reduce((a, r, k) => a + r.term / Math.pow(1 + i, k + 1), 0) - net;
+  if (f(0) <= 0) return 0;
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 80; k++) {
+    const mid = (lo + hi) / 2;
+    if (f(mid) > 0) lo = mid; else hi = mid;
+  }
+  const i = (lo + hi) / 2;
+  const out = (Math.pow(1 + i, ppy) - 1) * 100;
+  return Number.isFinite(out) ? out : 0;
+}
+
+function buildPlan(s, adv) {
+  const rows = schedule(s, adv);
+  const n = rows.length;
+  const totalInterest = rows.reduce((a, r) => a + r.interest, 0);
+  const totalFees = n * s.fee + s.setup + s.deed;
+  const totalPaid = rows.reduce((a, r) => a + r.term, 0) + s.setup + s.deed;
+  const lastTerm = rows[n - 1].term;
+  const eff = effectiveRate(rows, s.amount - s.setup - s.deed, s.ppy);
+
+  const years = [];
+  for (let y = 0; y * s.ppy < n; y++) {
+    const chunk = rows.slice(y * s.ppy, (y + 1) * s.ppy);
+    years.push({
+      year: y + 1, chunk,
+      interest: chunk.reduce((a, r) => a + r.interest, 0),
+      principal: chunk.reduce((a, r) => a + r.principal, 0),
+      term: chunk.reduce((a, r) => a + r.term, 0),
+      balance: chunk[chunk.length - 1].balance,
+      grace: chunk.some(r => r.grace),
+      rate: chunk.reduce((a, r) => a + r.effRate, 0) / chunk.length,
+    });
+  }
+  return { rows, n, g: graceTerms(s), totalInterest, totalFees, totalPaid, lastTerm, eff, years };
+}
+
+/* Tabellrader — samme funksjon for begge visninger */
+function makeTable(plan, s, view) {
+  const one = s.setup + s.deed;
+  if (view === "year") {
+    return plan.years.map((y, i) => {
+      const fees = y.chunk.length * s.fee + (i === 0 ? one : 0);
+      return {
+        key: "y" + y.year, year: y.year,
+        termin: y.chunk.length === 1 ? String(y.chunk[0].m)
+          : y.chunk[0].m + "–" + y.chunk[y.chunk.length - 1].m,
+        rate: y.rate, principal: y.principal, interest: y.interest, fees,
+        total: y.term + (i === 0 ? one : 0),
+        balance: y.balance, balancePct: s.amount > 0 ? y.balance / s.amount * 100 : 0,
+        isGrace: y.grace, bg: y.year % 2 === 0 ? C.zebra : "#fff",
+      };
+    });
+  }
+  return plan.rows.map((r, i) => {
+    const year = Math.ceil(r.m / s.ppy);
+    return {
+      key: "m" + r.m, year, termin: String(r.m), rate: r.effRate,
+      principal: r.principal, interest: r.interest,
+      fees: s.fee + (i === 0 ? one : 0),
+      total: r.term + (i === 0 ? one : 0),
+      balance: r.balance, balancePct: s.amount > 0 ? r.balance / s.amount * 100 : 0,
+      isGrace: r.grace, bg: year % 2 === 0 ? C.zebra : "#fff",
+    };
+  });
+}
+
+/* Sammenhengende år med samme rente slås sammen til segmenter */
+function rateSegments(list) {
+  const out = [];
+  list.forEach((r, i) => {
+    const last = out[out.length - 1];
+    if (last && Math.abs(last.rate - r) < 1e-9) last.end = i;
+    else out.push({ rate: r, start: i, end: i });
+  });
+  return out;
+}
+
+/* ============================================================================
+   Primitiver
+   ========================================================================== */
+const CARD = {
+  background: "#fff", border: "1px solid " + C.border, borderRadius: 12,
+  minWidth: 0, minHeight: 0,
+};
+
+function Card({ children, pad = 16, style }) {
+  return <div style={{ ...CARD, padding: pad, ...style }}>{children}</div>;
+}
+
+const TAB = on => ({
+  flex: "0 0 auto", padding: "6px 13px", border: "none", cursor: "pointer", borderRadius: 4,
+  fontFamily: "inherit", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap",
+  background: on ? "#fff" : "transparent",
+  color: on ? C.navy : C.text2,
+  boxShadow: on ? "0 1px 2px rgba(16,24,40,.08)" : "none",
+  transition: "background .15s, color .15s",
+});
+
+function Segment({ options, value, onChange, grow = true, style }) {
+  return (
+    <div style={{ display: "flex", gap: 2, background: C.track, borderRadius: 5, padding: 3, ...style }}>
+      {options.map(o => (
+        <button key={String(o.v)} type="button" onClick={() => onChange(o.v)}
+          aria-pressed={value === o.v}
+          style={{ ...TAB(value === o.v), flex: grow ? 1 : "0 0 auto" }}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+function Switch({ on, onChange, label }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} aria-label={label}
+      onClick={() => onChange(!on)}
+      style={{
+        width: 44, height: 24, borderRadius: 100, border: "none", padding: 2, cursor: "pointer",
+        display: "flex", alignItems: "center", flex: "none",
+        justifyContent: on ? "flex-end" : "flex-start",
+        background: on ? C.blue : C.border, transition: "background .15s",
+      }}>
+      <span style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", boxShadow: "0 1px 2px rgba(16,24,40,.16)" }} />
+    </button>
+  );
+}
+
+function FullscreenButton() {
+  const [on, setOn] = useState(false);
+  const [hover, setHover] = useState(false);
+
+  useEffect(() => {
+    const sync = () => setOn(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+
+  const toggle = () => {
+    if (document.fullscreenElement) {
+      if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    } else {
+      const el = document.documentElement;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) { const p = req.call(el); if (p && p.catch) p.catch(() => {}); }
+    }
+  };
+
+  const label = on ? "Avslutt fullskjerm" : "Vis i fullskjerm";
+  return (
+    <button type="button" onClick={toggle} title={label} aria-label={label} aria-pressed={on}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{
+        width: 34, height: 34, flex: "none", borderRadius: 100, cursor: "pointer",
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        border: "1px solid " + (hover ? C.blue : C.border),
+        background: hover ? C.blueSoft : "#fff",
+        color: hover || on ? C.blue : C.navy,
+        boxShadow: "0 1px 2px rgba(16,24,40,.05)",
+        transition: "background .15s, border-color .15s, color .15s",
+      }}>
+      <i className={on ? "bx bx-exit-fullscreen" : "bx bx-fullscreen"} style={{ fontSize: 17, display: "block" }} />
+    </button>
+  );
+}
+
+function FieldLabel({ htmlFor, children, style }) {
+  return <label htmlFor={htmlFor} style={{ fontSize: 12.5, fontWeight: 600, color: C.label, display: "block", ...style }}>{children}</label>;
+}
+
+function Help({ children, style }) {
+  return <div style={{ fontSize: 11.5, lineHeight: 1.45, color: C.text2, ...style }}>{children}</div>;
+}
+
+function NumField({ id, label, value, onChange, suffix, step = 1, min = 0, max, small, grouped, title, deferred }) {
+  /* deferred: felt som styrer andre verdier venter på et tall innenfor min/max,
+     slik at halvskrevne tall som «3» på vei til «39» ikke utløser beregningen */
+  const [draft, setDraft] = useState(null);
+  const type = raw => {
+    if (!deferred) return onChange(Math.max(0, +raw || 0));
+    const v = +raw;
+    if (raw !== "" && Number.isFinite(v) && v >= min && (max == null || v <= max)) { setDraft(null); onChange(v); }
+    else setDraft(raw);
+  };
+  const commit = () => {
+    if (draft === null) return;
+    const v = draft === "" ? min : clamp(+draft || min, min, max == null ? Infinity : max);
+    setDraft(null);
+    onChange(v);
+  };
+  return (
+    <div style={{ minWidth: 0 }}>
+      {label && (
+        <FieldLabel htmlFor={id} style={{ fontSize: small ? 11.5 : 12.5, marginBottom: 4 }}>
+          <span title={title || undefined} style={{ whiteSpace: "nowrap" }}>{label}</span>
+        </FieldLabel>
+      )}
+      <div style={{ position: "relative", minWidth: 0 }}>
+        {grouped
+          ? <input id={id} className="num" type="text" inputMode="numeric" value={grp(value)} title={title || undefined}
+            onChange={e => onChange(Math.max(0, +e.target.value.replace(/[^\d]/g, "") || 0))} />
+          : <input id={id} className="num" type="number" value={draft !== null ? draft : value}
+            step={step} min={min} max={max} title={title || undefined}
+            onChange={e => type(e.target.value)} onBlur={commit}
+            onKeyDown={e => { if (e.key === "Enter") commit(); }} />}
+        {suffix && <span style={{
+          position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+          fontSize: 12, color: C.text3, pointerEvents: "none",
+        }}>{suffix}</span>}
+      </div>
+    </div>
+  );
+}
+
+function Slider({ id, label, display, value, min, max, step, onChange, minLabel, maxLabel }) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+        <FieldLabel htmlFor={id}>{label}</FieldLabel>
+        <span style={{ fontSize: 18, fontWeight: 600, color: C.navy, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{display}</span>
+      </div>
+      <input id={id} className="rng" type="range" min={min} max={max} step={step} value={value}
+        onChange={e => onChange(+e.target.value)} />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, lineHeight: 1, marginTop: 2, color: C.text3 }}>
+        <span>{minLabel}</span><span>{maxLabel}</span>
+      </div>
+    </div>
+  );
+}
+
+const Divider = () => <div style={{ height: 1, background: C.border }} />;
+
+function StatCell({ label, value, sub, accent, last }) {
+  return (
+    <div style={{ background: "#fff", padding: "10px 16px", minWidth: 0, boxShadow: last ? "inset 3px 0 0 " + C.blue : "none" }}>
+      <div style={{ fontSize: 11, color: C.text2, whiteSpace: "nowrap", marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 17, fontWeight: 600, color: accent || C.navy, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: C.text3, whiteSpace: "nowrap" }}>{sub}</div>}
+    </div>
+  );
+}
+
+function CardTitle({ children, size = 15, sub }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: size, fontWeight: 500, color: C.navy, letterSpacing: "-.01em" }}>{children}</div>
+      {sub && <div style={{ fontSize: 11.5, color: C.text2, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function GracePill() {
+  return (
+    <span style={{
+      marginLeft: 6, fontSize: 10, fontWeight: 600, padding: "1px 7px", borderRadius: 100,
+      background: C.track, border: "1px solid " + C.border, color: C.sec800, whiteSpace: "nowrap",
+    }}>Avdragsfri</span>
+  );
+}
+
+function BalanceBar({ value }) {
+  return (
+    <div style={{ width: 84, height: 3, background: C.border, borderRadius: 100, marginTop: 4, marginLeft: "auto", overflow: "hidden" }}>
+      <div style={{ width: Math.max(0, Math.min(100, value)) + "%", height: "100%", background: C.blue }} />
+    </div>
+  );
+}
+
+function Legend({ items }) {
+  return (
+    <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+      {items.map(i => (
+        <span key={i.label} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: C.text2, whiteSpace: "nowrap" }}>
+          <span style={{ width: 9, height: 9, borderRadius: 2, background: i.color, flex: "none" }} />{i.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/* X-akse med årsetiketter — tynnes ut ved lang løpetid */
+function YearAxis({ years }) {
+  const stepv = years <= 8 ? 1 : years <= 16 ? 2 : 5;
+  const marks = [];
+  for (let i = 0; i < years; i++) {
+    if (i === 0 || i === years - 1 || ((i + 1) % stepv === 0 && i < years - 2)) marks.push(i);
+  }
+  return (
+    <div style={{ position: "relative", height: 14, marginTop: 4, flex: "none" }}>
+      {marks.map(i => {
+        const first = i === 0, last = i === years - 1;
+        const pos = first ? { left: 0 } : last ? { right: 0 } : { left: ((i + 0.5) / years * 100) + "%", transform: "translateX(-50%)" };
+        return (
+          <span key={i} style={{
+            position: "absolute", top: 0, fontSize: 10, color: C.text3, whiteSpace: "nowrap", ...pos,
+          }}>{"År " + (i + 1)}</span>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================================
+   Stablet søylediagram — renter og avdrag per år
+   ========================================================================== */
+function StackedBars({ plan, normalize }) {
+  const max = Math.max(...plan.years.map(y => y.term), 1);
+  const nYears = plan.years.length;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
+        {!normalize && (
+          <div style={{
+            width: 74, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between",
+            fontSize: 10, color: C.text3, textAlign: "right", padding: "0 0 1px",
+          }}>
+            <span>{nok(max)}</span><span>{nok(max / 2)}</span><span>0 kr</span>
+          </div>
+        )}
+        <div style={{
+          position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "flex-end",
+          gap: nYears > 20 ? 2 : 4, borderBottom: "1px solid " + C.inputBorder,
+        }}>
+          {!normalize && (
+            <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+              <div style={{ position: "absolute", left: 0, right: 0, top: 0, height: 1, background: C.border }} />
+              <div style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 1, background: C.border }} />
+            </div>
+          )}
+          {plan.years.map(y => {
+            const h = normalize ? 100 : (y.term / max) * 100;
+            const iShare = y.term > 0 ? y.interest / y.term * 100 : 0;
+            return (
+              <div key={y.year} title={"År " + y.year + " · renter " + nok(y.interest) + " · avdrag " + nok(y.principal)}
+                style={{
+                  flex: 1, minWidth: 0, height: h + "%", display: "flex", flexDirection: "column",
+                  justifyContent: "flex-end", borderRadius: 3, overflow: "hidden", position: "relative",
+                }}>
+                <div style={{ height: iShare + "%", background: C.blue2 }} />
+                <div style={{ height: (100 - iShare) + "%", background: C.blue }} />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ paddingLeft: normalize ? 0 : 82 }}><YearAxis years={nYears} /></div>
+    </div>
+  );
+}
+
+/* ============================================================================
+   Søylediagram — restgjeld og betalt totalt per år
+   ========================================================================== */
+function DebtBars({ plan, s }) {
+  const max = Math.max(s.amount, plan.totalPaid, 1);
+  const one = s.setup + s.deed;
+  let cum = one;
+  const data = plan.years.map(y => {
+    cum += y.term;
+    return { year: y.year, balance: y.balance, paid: cum };
+  });
+  const nYears = data.length;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
+        <div style={{
+          width: 78, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between",
+          fontSize: 10, color: C.text3, textAlign: "right", padding: "0 0 1px",
+        }}>
+          <span>{nok(max)}</span><span>{nok(max / 2)}</span><span>0 kr</span>
+        </div>
+        <div style={{
+          position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "flex-end",
+          gap: nYears > 20 ? 3 : 5, borderBottom: "1px solid " + C.inputBorder,
+        }}>
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+            <div style={{ position: "absolute", left: 0, right: 0, top: 0, height: 1, background: C.border }} />
+            <div style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 1, background: C.border }} />
+          </div>
+          {data.map(d => (
+            <div key={d.year}
+              title={"År " + d.year + " · restgjeld " + nok(d.balance) + " · betalt totalt " + nok(d.paid)}
+              style={{ flex: 1, minWidth: 0, height: "100%", display: "flex", alignItems: "flex-end", gap: 2 }}>
+              <div style={{
+                flex: 1, minWidth: 0, height: (d.balance / max * 100) + "%",
+                background: C.blue, borderRadius: "3px 3px 0 0",
+              }} />
+              <div style={{
+                flex: 1, minWidth: 0, height: (d.paid / max * 100) + "%",
+                background: C.violet, borderRadius: "3px 3px 0 0",
+              }} />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{ paddingLeft: 86 }}><YearAxis years={nYears} /></div>
+    </div>
+  );
+}
+
+/* ============================================================================
+   Rentekurve — dragbar
+   ========================================================================== */
+function RateCurve({ s, setYearRates, disabled }) {
+  const boxRef = useRef(null);
+  const [dragging, setDragging] = useState(false);
+  /* Året man griper og rentebanen slik den var før grepet, slik at dragingen
+     bare flytter nivået på dette trinnet og lar tidligere trinn stå */
+  const fromRef = useRef(0);
+  const baseRef = useRef(null);
+  const list = disabled ? new Array(s.years).fill(s.rate) : yearRateList(s);
+  const segs = rateSegments(list);
+
+  const paint = e => {
+    const el = boxRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const cs = window.getComputedStyle(el);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const padT = parseFloat(cs.paddingTop) || 0;
+    const padB = parseFloat(cs.paddingBottom) || 0;
+    const w = rect.width - padL - padR, h = rect.height - padT - padB;
+    if (!(w > 0) || !(h > 0)) return;
+    const x = e.clientX - rect.left - padL;
+    const y = e.clientY - rect.top - padT;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    let r = (1 - y / h) * 15;
+    if (!Number.isFinite(r)) return;
+    r = Math.max(0, Math.min(15, Math.round(r / 0.05) * 0.05));
+    /* En renteendring varer ut løpetiden – ellers ville renten hoppet tilbake etter ett år */
+    const next = (baseRef.current || list).slice();
+    for (let i = fromRef.current; i < next.length; i++) next[i] = r;
+    setYearRates(next);
+  };
+
+  const grab = e => {
+    const el = boxRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width) return;
+    const cs = window.getComputedStyle(el);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const w = rect.width - padL - (parseFloat(cs.paddingRight) || 0);
+    if (!(w > 0)) return;
+    const x = e.clientX - rect.left - padL;
+    if (!Number.isFinite(x)) return;
+    fromRef.current = Math.max(0, Math.min(s.years - 1, Math.floor(x / w * s.years)));
+    baseRef.current = list.slice();
+  };
+
+  const labels = segs
+    .map(sg => ({ ...sg, span: sg.end - sg.start + 1 }))
+    .filter(sg => sg.span / s.years >= 0.16)
+    .sort((a, b) => b.span - a.span)
+    .slice(0, 3);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 6 }}>
+      <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
+        <div style={{
+          width: 44, flex: "none", display: "flex", flexDirection: "column",
+          justifyContent: "space-between", fontSize: 10, color: C.text3, textAlign: "right",
+          padding: "0 0 2px",
+        }}>
+          <span>15,00 %</span><span>7,50 %</span><span>0 %</span>
+        </div>
+        <div ref={boxRef}
+          onPointerDown={disabled ? undefined : e => {
+            e.currentTarget.setPointerCapture?.(e.pointerId);
+            setDragging(true); grab(e); paint(e);
+          }}
+          onPointerMove={disabled ? undefined : e => { if (dragging) paint(e); }}
+          onPointerUp={disabled ? undefined : () => { setDragging(false); baseRef.current = null; }}
+          onPointerLeave={disabled ? undefined : () => { setDragging(false); baseRef.current = null; }}
+          style={{
+            flex: 1, minWidth: 0, position: "relative", background: C.zebra,
+            border: "1px solid " + C.border, borderRadius: 8, padding: 8,
+            display: "flex", alignItems: "flex-end", gap: 3,
+            touchAction: "none", userSelect: "none", cursor: disabled ? "default" : "ns-resize",
+          }}>
+          {list.map((r, i) => (
+            <div key={i} title={disabled ? undefined : "År " + (i + 1) + " · " + pct(r)}
+              style={{
+                flex: 1, minWidth: 0, height: Math.max(0, r / 15 * 100) + "%",
+                background: disabled ? "#F4F6F8" : C.blueSoft,
+                borderTop: "3px solid " + (disabled ? C.inputBorder : C.blue),
+              }} />
+          ))}
+          {disabled && (
+            <div style={{
+              position: "absolute", left: 0, right: 0, top: "38%", textAlign: "center",
+              fontSize: 12, color: C.text2, pointerEvents: "none", padding: "0 24px",
+            }}>
+              Slå på for å sette renten fra et valgt år og ut løpetiden.<br />Grunnplanen bruker flat rente på {pct(s.rate)}.
+            </div>
+          )}
+          <div style={{ position: "absolute", inset: 8, pointerEvents: "none" }}>
+            {!disabled && labels.map(sg => {
+              const right = sg.start / s.years >= 0.82;
+              return (
+                <div key={sg.start} style={{
+                  position: "absolute",
+                  left: sg.start / s.years * 100 + "%",
+                  width: sg.span / s.years * 100 + "%",
+                  bottom: "calc(" + Math.max(0, sg.rate / 15 * 100) + "% + 5px)",
+                  textAlign: right ? "right" : "center",
+                  fontSize: 11.5, fontWeight: 600, color: C.blue, whiteSpace: "nowrap",
+                }}>{pct(sg.rate)}</div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+      <div style={{ paddingLeft: 52 }}><YearAxis years={s.years} /></div>
+      <Help style={{ paddingLeft: 52 }}>
+        {segs.length === 1
+          ? "Flat rente på " + pct(segs[0].rate) + " gjennom hele løpetiden."
+          : segs.length <= 6
+            ? segs.map(sg => "år " + (sg.start + 1) + (sg.end > sg.start ? "–" + (sg.end + 1) : "") + ": " + pct(sg.rate)).join(" · ")
+            : segs.length + " renteperioder, fra " + pct(Math.min(...list)) + " til " + pct(Math.max(...list)) + "."}
+      </Help>
+    </div>
+  );
+}
+
+/* ============================================================================
+   Nedbetalingstabell
+   ========================================================================== */
+function PlanTable({ plan, s, view, showRate }) {
+  const rows = makeTable(plan, s, view);
+  const cols = showRate
+    ? ["År", "Termin", "Rente", "Avdrag", "Renter", "Gebyrer", "Sum betaling", "Restgjeld"]
+    : ["År", "Termin", "Avdrag", "Renter", "Gebyrer", "Sum betaling", "Restgjeld"];
+  const padOf = i => ({ paddingLeft: i === 0 ? 24 : 10, paddingRight: i === cols.length - 1 ? 24 : 10 });
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      <table className="tbl">
+        <thead>
+          <tr>{cols.map((c, i) => <th key={c} className={i < 2 ? "l" : ""} style={padOf(i)}>{c}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.key} style={{ background: r.bg }}>
+              <td className="l" style={{ paddingLeft: 24, color: C.text2 }}>{r.year}</td>
+              <td className="l">{r.termin}{r.isGrace && <GracePill />}</td>
+              {showRate && <td style={{ color: C.blue, fontWeight: 600 }}>{pct(r.rate)}</td>}
+              <td>{nok(r.principal)}</td>
+              <td>{nok(r.interest)}</td>
+              <td style={{ color: C.text2 }}>{nok(r.fees)}</td>
+              <td style={{ fontWeight: 600 }}>{nok(r.total)}</td>
+              <td style={{ paddingRight: 24 }}>
+                {nok(r.balance)}
+                <BalanceBar value={r.balancePct} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td className="l" colSpan={showRate ? 3 : 2} style={{ paddingLeft: 24, color: C.text2 }}>Sum</td>
+            <td>{nok(s.amount)}</td>
+            <td>{nok(plan.totalInterest)}</td>
+            <td>{nok(plan.totalFees)}</td>
+            <td style={{ color: C.blue }}>{nok(plan.totalPaid)}</td>
+            <td style={{ paddingRight: 24 }}>0 kr</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+function Footnote({ children }) {
+  return (
+    <div style={{
+      background: C.zebra, borderTop: "1px solid " + C.border, padding: "9px 24px",
+      display: "flex", gap: 8, alignItems: "flex-start", borderRadius: "0 0 12px 12px",
+    }}>
+      <i className="bx bx-info-circle" style={{ color: C.text3, fontSize: 15, flex: "none", marginTop: 1 }} />
+      <div style={{ fontSize: 11, lineHeight: 1.45, color: C.text2 }}>{children}</div>
+    </div>
+  );
+}
+
+/* ============================================================================
+   Rot-komponent
+   ========================================================================== */
+function App() {
+  const [s, setS] = useState({
+    amount: 10000000, rate: 5.4, years: 25, fee: 45, setup: 2500, deed: 585,
+    ppy: 12, grace: 0, graceUnit: "mnd", type: "annuitet", view: "year", tab: "calc",
+    /* debtFreeAge = age + years fra start, siden de to nå holdes i takt */
+    stepsOn: false, yearRates: null, age: 35, debtFreeAge: 60, assetValue: 14000000,
+    ltvOn: false, scenario: "flat",
+  });
+  const up = (k, v) => setS(p => ({ ...p, [k]: v }));
+  /* Avdragsfriheten kan ikke overleve et bytte av enhet eller kortere løpetid */
+  const setGraceUnit = u => setS(p => ({ ...p, graceUnit: u, grace: Math.min(p.grace, graceMaxFor(u, p.years)) }));
+  const setYears = y => setS(p => ({
+    ...p, years: y, debtFreeAge: p.age + y, grace: Math.min(p.grace, graceMaxFor(p.graceUnit, y)),
+  }));
+  /* Målet for gjeldfrihet styrer løpetiden: 35 år nå og gjeldfri ved 39 gir 4 år nedbetaling */
+  const setDebtFreeAge = d => setS(p => {
+    const years = clamp(d - p.age, YEARS_MIN, YEARS_MAX);
+    return {
+      ...p, years, debtFreeAge: p.age + years, grace: Math.min(p.grace, graceMaxFor(p.graceUnit, years)),
+    };
+  });
+  /* Ny alder flytter målet og beholder løpetiden – ellers ville målet kunne havne i fortiden */
+  const setAge = a => setS(p => ({ ...p, age: a, debtFreeAge: a + p.years }));
+
+  const base = buildPlan(s, false);
+  const adv = buildPlan(s, true);
+  const tab = s.tab;
+
+  const n = base.n, g = base.g;
+  const perLabel = s.ppy === 12 ? "måned" : "termin";
+  const typeName = s.type === "annuitet" ? "annuitetslån" : "serielån";
+
+  const tabs = [
+    { v: "calc", label: "Kalkulator" },
+    { v: "plan", label: "Nedbetalingsplan" },
+    { v: "graph", label: "Grafisk" },
+    { v: "adv", label: "Avansert" },
+    { v: "advplan", label: "Plan (avansert)" },
+  ];
+
+  /* ---------- fane: kalkulator ---------- */
+  const firstTerm = base.rows[0].term;
+  const firstAmort = base.rows[Math.min(g, n - 1)].term;
+  const bigLabel = g > 0 ? "Terminbeløp i avdragsfri periode"
+    : s.type === "serie" ? "Første terminbeløp"
+      : "Terminbeløp per " + perLabel;
+  const bigSub = g > 0
+    ? "Deretter " + nok(firstAmort) + " per " + perLabel + " med avdrag"
+    : s.type === "annuitet"
+      ? "Inkl. termingebyr " + nok(s.fee)
+      : "Synker til " + nok(base.lastTerm) + " ved siste termin";
+
+  const calcTab = (
+    <div style={{
+      display: "grid", gridTemplateColumns: "minmax(0,372px) minmax(0,1fr)", gap: 12,
+      alignItems: "stretch", flex: 9, minHeight: 0,
+    }}>
+      {/* Inndata */}
+      <Card pad={16} style={{ display: "flex", flexDirection: "column", gap: 8, justifyContent: "space-between", overflow: "auto" }}>
+        <div>
+          <FieldLabel style={{ marginBottom: 5 }}>Lånetype</FieldLabel>
+          <Segment value={s.type} onChange={v => up("type", v)}
+            options={[{ v: "annuitet", label: "Annuitetslån" }, { v: "serie", label: "Serielån" }]} />
+          <Help style={{ marginTop: 5 }}>
+            {s.type === "annuitet"
+              ? "Like store terminbeløp hele veien. Renteandelen er høyest i starten."
+              : "Fast avdrag hver termin. Høyest kostnad i starten, lavere mot slutten."}
+          </Help>
+        </div>
+
+        <Slider id="f-amount" label="Lånebeløp" display={nok(s.amount)} value={s.amount}
+          min={100000} max={50000000} step={50000} onChange={v => up("amount", v)}
+          minLabel="100 000 kr" maxLabel="50 000 000 kr" />
+
+        <Slider id="f-rate" label="Nominell rente" display={pct(s.rate)} value={s.rate}
+          min={1} max={15} step={0.05} onChange={v => up("rate", v)}
+          minLabel="1,00 %" maxLabel="15,00 %" />
+
+        <Slider id="f-years" label="Nedbetalingstid" display={s.years + " år"} value={s.years}
+          min={YEARS_MIN} max={YEARS_MAX} step={1} onChange={setYears}
+          minLabel={YEARS_MIN + " år"} maxLabel={YEARS_MAX + " år"} />
+
+        <Divider />
+
+        <div>
+          <FieldLabel htmlFor="f-ppy" style={{ marginBottom: 4 }}>Terminer per år</FieldLabel>
+          <div style={{ position: "relative" }}>
+            <select id="f-ppy" className="sel" value={s.ppy} onChange={e => up("ppy", +e.target.value)}>
+              <option value={12}>12 – månedlig</option>
+              <option value={6}>6 – annenhver måned</option>
+              <option value={4}>4 – kvartalsvis</option>
+              <option value={2}>2 – halvårlig</option>
+              <option value={1}>1 – årlig</option>
+            </select>
+            <i className="bx bx-chevron-down" style={{
+              position: "absolute", right: 9, top: "50%", transform: "translateY(-50%)",
+              color: C.text2, fontSize: 18, pointerEvents: "none",
+            }} />
+          </div>
+          <Help style={{ marginTop: 4 }}>Renten beregnes per termin. {n} terminer totalt.</Help>
+        </div>
+
+        <div>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+            <FieldLabel htmlFor="f-grace">Avdragsfri periode</FieldLabel>
+            <span style={{ fontSize: 18, fontWeight: 600, color: C.navy, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+              {s.grace} {s.graceUnit}
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 96px", gap: 10, alignItems: "center" }}>
+            <div style={{ minWidth: 0 }}>
+              <input id="f-grace" className="rng" type="range" min={0} step={1} value={s.grace}
+                max={graceMaxFor(s.graceUnit, s.years)}
+                onChange={e => up("grace", Math.max(0, +e.target.value || 0))} />
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, lineHeight: 1, marginTop: 2, color: C.text3 }}>
+                <span>0 {s.graceUnit}</span>
+                <span>{graceMaxFor(s.graceUnit, s.years)} {s.graceUnit}</span>
+              </div>
+            </div>
+            <Segment value={s.graceUnit} onChange={setGraceUnit}
+              options={[{ v: "mnd", label: "Mnd" }, { v: "år", label: "År" }]} />
+          </div>
+          <Help style={{ marginTop: 4 }}>
+            {g > 0
+              ? g + " avdragsfrie terminer: du betaler kun renter og gebyr først, deretter " + (n - g) + " terminer med avdrag."
+              : "Ingen avdragsfrihet – avdrag fra første termin."}
+          </Help>
+        </div>
+
+        <Divider />
+
+        <div>
+          <FieldLabel style={{ marginBottom: 6 }}>Gebyrer</FieldLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0,1fr))", gap: 8 }}>
+            <NumField id="f-fee" small label="Termingebyr" suffix="kr" value={s.fee} step={5} onChange={v => up("fee", v)} />
+            <NumField id="f-setup" small grouped label="Etablering" title="Etableringsgebyr" suffix="kr" value={s.setup} step={100} onChange={v => up("setup", v)} />
+            <NumField id="f-deed" small label="Tinglysning" title="Tinglysningsgebyr" suffix="kr" value={s.deed} step={5} onChange={v => up("deed", v)} />
+          </div>
+        </div>
+      </Card>
+
+      {/* Resultat + graf */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0, minHeight: 0 }}>
+        <Card pad={0} style={{ flex: "none" }}>
+          <div style={{
+            display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 16,
+            padding: "16px 20px 14px", alignItems: "start",
+          }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: C.text2, marginBottom: 2 }}>{bigLabel}</div>
+              <div style={{ fontSize: 38, lineHeight: 1.05, fontWeight: 600, color: C.navy, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                {nok(firstTerm)}
+              </div>
+              <div style={{ fontSize: 12, color: C.text, marginTop: 4 }}>{bigSub}</div>
+            </div>
+            <div style={{ textAlign: "right", paddingLeft: 16, borderLeft: "1px solid " + C.border }}>
+              <div style={{ fontSize: 12, color: C.text2, marginBottom: 2 }}>Effektiv rente</div>
+              <div style={{ fontSize: 26, fontWeight: 600, color: C.blue, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{pct(base.eff)}</div>
+              <div style={{ fontSize: 11.5, color: C.text3 }}>Inkl. gebyrer</div>
+            </div>
+          </div>
+          <Divider />
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", padding: "12px 20px 14px", gap: 12 }}>
+            {[
+              ["Totale renter", nok(base.totalInterest)],
+              ["Gebyrer totalt", nok(base.totalFees)],
+              ["Totalt å betale", nok(base.totalPaid)],
+              ["Siste termin", nok(base.lastTerm)],
+            ].map(([l, v]) => (
+              <div key={l} style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: C.text2, whiteSpace: "nowrap" }}>{l}</div>
+                <div style={{ fontSize: 17, fontWeight: 600, color: C.navy, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card pad={16} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <CardTitle>Renter og avdrag per år</CardTitle>
+            <Legend items={[{ label: "Renter", color: C.blue2 }, { label: "Avdrag", color: C.blue }]} />
+          </div>
+          <StackedBars plan={base} />
+        </Card>
+      </div>
+    </div>
+  );
+
+  /* ---------- fane: nedbetalingsplan ---------- */
+  const planSub = nok(s.amount) + " · " + pct(s.rate) + " · " + s.years + " år · " + typeName
+    + " · " + s.ppy + " terminer per år" + (g > 0 ? " · " + g + " avdragsfrie terminer" : "");
+
+  const planTab = (
+    <Card pad={0} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ padding: "14px 24px 12px", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+        <CardTitle size={19} sub={planSub}>Nedbetalingsplan</CardTitle>
+        <Segment grow={false} value={s.view} onChange={v => up("view", v)}
+          options={[{ v: "year", label: "Per år" }, { v: "month", label: "Per termin" }]} />
+      </div>
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 1,
+        background: C.border, borderTop: "1px solid " + C.border, borderBottom: "1px solid " + C.border,
+      }}>
+        <StatCell label="Lånebeløp" value={nok(s.amount)} />
+        <StatCell label="Totale renter" value={nok(base.totalInterest)} />
+        <StatCell label="Gebyrer" value={nok(base.totalFees)} />
+        <StatCell label="Totalt å betale" value={nok(base.totalPaid)} accent={C.blue} last />
+      </div>
+      <PlanTable plan={base} s={s} view={s.view} showRate={false} />
+      <Footnote>
+        Beregningen forutsetter fast nominell rente gjennom hele løpetiden. Etablerings- og
+        tinglysningsgebyr er lagt inn i gebyrene på første termin. Faktiske betingelser avtales med banken.
+      </Footnote>
+    </Card>
+  );
+
+  /* ---------- fane: grafisk ---------- */
+  const firstShare = base.years[0] ? base.years[0].interest / base.years[0].term * 100 : 0;
+  const lastY = base.years[base.years.length - 1];
+  const lastShare = lastY && lastY.term > 0 ? lastY.interest / lastY.term * 100 : 0;
+
+  const graphTab = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, flex: 1, minHeight: 0 }}>
+      <Card pad={16} style={{ flex: 1.35, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <CardTitle>Restgjeld over tid</CardTitle>
+          <Legend items={[{ label: "Restgjeld", color: C.blue }, { label: "Betalt totalt", color: C.violet }]} />
+        </div>
+        <DebtBars plan={base} s={s} />
+      </Card>
+
+      <Card pad={16} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <CardTitle>Hva terminbeløpet går til</CardTitle>
+          <Legend items={[{ label: "Renter", color: C.blue2 }, { label: "Avdrag", color: C.blue }]} />
+        </div>
+        <StackedBars plan={base} normalize />
+        <Help>
+          Første år går {pct0(firstShare)} av terminbeløpet til renter. Siste år er andelen {pct0(lastShare)}.
+        </Help>
+      </Card>
+    </div>
+  );
+
+  /* ---------- fane: avansert ---------- */
+  const advRows = adv.rows;
+  const startLTV = s.assetValue > 0 ? s.amount / assetAt(s, 0) * 100 : 0;
+  const ltvPts = advRows.map((r, i) => {
+    const a = assetAt(s, i + 1);
+    return a > 0 ? r.balance / a * 100 : 0;
+  });
+  const ltvTop = Math.max(100, startLTV, ...ltvPts);
+  const LY = v => 200 - Math.max(0, Math.min(1, v / ltvTop)) * 198;
+  const LX = i => (ltvPts.length > 0 ? i / ltvPts.length * 1000 : 0);
+  const ltvAll = [[0, LY(startLTV)]].concat(ltvPts.map((v, i) => [LX(i + 1), LY(v)]));
+  const ltvLine = ltvAll.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  const ltvArea = ltvLine + " L1000,200 L0,200 Z";
+
+  let nextStep = "Under 60 % allerede";
+  if (startLTV > 60) {
+    const thr = [85, 75, 60].find(t => t < startLTV);
+    const idx = ltvPts.findIndex(v => v <= thr);
+    nextStep = idx === -1 ? "Nås ikke i løpetiden"
+      : thr + " % ved " + (s.age + Math.ceil((idx + 1) / s.ppy)) + " år";
+  }
+
+  /* Målet og løpetiden holdes i takt, så merknaden bekrefter hva valget koster */
+  const debtNote = "Nedbetalingstiden følger målet: " + s.years + " år gir gjeldfrihet ved "
+    + s.debtFreeAge + " år, med " + nok(firstTerm) + " per " + perLabel + "."
+    + (s.years === YEARS_MAX ? " Kalkulatoren regner med maksimalt " + YEARS_MAX + " års løpetid." : "");
+
+  const advTab = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0 }}>
+      <Help style={{ fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        <span style={{ fontWeight: 600, color: C.navy, fontSize: 13 }}>Avanserte funksjoner. </span>
+        Renteendringer underveis, alder og gjeldfrihet, belåningsgrad og rentetrapp. Endringene her vises i fanen «Plan (avansert)».
+      </Help>
+
+      <div style={{
+        display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)",
+        gridTemplateRows: "auto minmax(0,1fr)", gap: 12, flex: 1, minHeight: 0,
+      }}>
+        {/* Renteendringer */}
+        <Card pad={16} style={{
+          gridRow: "span 2", display: "flex", flexDirection: "column", gap: 10, minHeight: 0,
+        }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+            <CardTitle sub="Dra i kurven for å sette renten. Endringen gjelder fra året du tar tak i og ut løpetiden.">
+              Renteendringer underveis
+            </CardTitle>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flex: "none" }}>
+              {s.stepsOn && (
+                <button type="button" className="lnk" onClick={() => up("yearRates", null)}>
+                  <i className="bx bx-reset" style={{ fontSize: 15 }} />Flat rente
+                </button>
+              )}
+              <Switch on={s.stepsOn} onChange={v => up("stepsOn", v)} label="Renteendringer underveis" />
+            </div>
+          </div>
+          <RateCurve s={s} setYearRates={v => up("yearRates", v)} disabled={!s.stepsOn} />
+        </Card>
+
+        {/* Alder, gjeldfrihet, sikkerhet + rentetrapp */}
+        <Card pad={16} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div>
+            <CardTitle>Alder, gjeldfrihet og sikkerhet</CardTitle>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 8 }}>
+              <NumField id="f-age" small deferred label="Din alder" suffix="år" min={18} max={80}
+                value={s.age} onChange={setAge} />
+              <NumField id="f-dfa" small deferred label="Gjeldfri ved alder" suffix="år" min={20} max={90}
+                value={s.debtFreeAge} onChange={setDebtFreeAge} />
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <Slider id="f-asset" label="Verdi på sikkerheten" display={nok(s.assetValue)}
+                value={s.assetValue} min={0} max={70000000} step={100000}
+                onChange={v => up("assetValue", v)} minLabel="0 kr" maxLabel="70 000 000 kr" />
+            </div>
+          </div>
+          <Divider />
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+            <CardTitle sub="Banker priser i trapper. Renten settes ned 0,25 % for hvert nivå lånet faller under: 85 %, 75 % og 60 % av verdien.">
+              Rentetrapp ved lavere belåningsgrad
+            </CardTitle>
+            <Switch on={s.ltvOn} onChange={v => up("ltvOn", v)} label="Rentetrapp ved lavere belåningsgrad" />
+          </div>
+        </Card>
+
+        {/* Belåningsgrad over tid */}
+        <Card pad={16} style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <CardTitle>Belåningsgrad over tid</CardTitle>
+            <Segment grow={false} value={s.scenario} onChange={v => up("scenario", v)}
+              options={[{ v: "fall", label: "Fall 10 %" }, { v: "flat", label: "Uendret" }, { v: "growth", label: "+2 % p.a." }]} />
+          </div>
+          <div style={{ position: "relative", flex: 1, minHeight: 96 }}>
+            <svg viewBox="0 0 1000 200" preserveAspectRatio="none" style={{ display: "block", width: "100%", height: "100%" }}>
+              {[85, 75, 60].map(t => (
+                <line key={t} x1="0" x2="1000" y1={LY(t)} y2={LY(t)} stroke={C.border} strokeWidth="1"
+                  strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+              ))}
+              <line x1="0" y1="199" x2="1000" y2="199" stroke={C.inputBorder} strokeWidth="1" vectorEffect="non-scaling-stroke" />
+              <path d={ltvArea} fill={C.blue} fillOpacity="0.07" />
+              <path d={ltvLine} fill="none" stroke={C.blue} strokeWidth="2.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            </svg>
+            {[85, 75, 60].map(t => (
+              <div key={t} style={{
+                position: "absolute", right: 0, top: (LY(t) / 200 * 100) + "%",
+                transform: "translateY(-100%)", background: "#fff", padding: "0 3px",
+                fontSize: 10.5, fontWeight: 600, color: C.text3, whiteSpace: "nowrap",
+              }}>{t} %</div>
+            ))}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.text3 }}>
+            <span>{s.age} år</span><span>{s.age + s.years} år</span>
+          </div>
+          <div style={{
+            display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 1,
+            background: C.border, border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden",
+          }}>
+            <StatCell label="Belåningsgrad nå" value={pct1(startLTV)} />
+            <StatCell label="Neste rentetrapp" value={nextStep} />
+            <StatCell label="Gjeldfri" value={(s.age + s.years) + " år"} />
+          </div>
+          <Help>{debtNote}</Help>
+        </Card>
+      </div>
+    </div>
+  );
+
+  /* ---------- fane: plan (avansert) ---------- */
+  const diff = adv.totalPaid - base.totalPaid;
+  const diffColor = diff > 0.5 ? C.red : diff < -0.5 ? C.blue : C.text2;
+  const diffText = (diff > 0.5 ? "+" : diff < -0.5 ? "−" : "") + nok(Math.abs(diff));
+  const advSub = (s.stepsOn ? "trinnvis rente" : "flat rente")
+    + (s.ltvOn ? " · rentetrapp etter belåningsgrad" : "")
+    + " · " + s.years + " år · " + s.ppy + " terminer per år";
+
+  const advPlanTab = (
+    <Card pad={0} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <div style={{ padding: "14px 24px 12px", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+        <CardTitle size={19} sub={advSub}>Nedbetalingsplan – avansert</CardTitle>
+        <Segment grow={false} value={s.view} onChange={v => up("view", v)}
+          options={[{ v: "year", label: "Per år" }, { v: "month", label: "Per termin" }]} />
+      </div>
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 1,
+        background: C.border, borderTop: "1px solid " + C.border, borderBottom: "1px solid " + C.border,
+      }}>
+        <StatCell label="Første termin" value={nok(adv.rows[0].term)} />
+        <StatCell label="Totale renter" value={nok(adv.totalInterest)} />
+        <StatCell label="Mot flat rente" value={diffText} accent={diffColor} />
+        <StatCell label="Totalt å betale" value={nok(adv.totalPaid)} accent={C.blue} last />
+      </div>
+      <PlanTable plan={adv} s={s} view={s.view} showRate />
+      <Footnote>
+        Rentekolonnen viser renten som faktisk er brukt i terminen, inkludert renteendringer du har lagt
+        inn og eventuell rentetrapp etter belåningsgrad.
+      </Footnote>
+    </Card>
+  );
+
+  /* ---------- ramme ---------- */
+  return (
+    <div style={{
+      height: "100%", background: C.canvas, padding: "14px 20px 16px",
+      display: "flex", flexDirection: "column", gap: 12, overflow: "hidden",
+    }}>
+      <div style={{ maxWidth: 1280, width: "100%", margin: "0 auto", display: "flex", flexDirection: "column", gap: 12, flex: 1, minHeight: 0 }}>
+
+        {/* topplinje */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 24, flex: "none" }}>
+          <img src="spwm-logo.svg" alt="Söderberg &amp; Partners Wealth Management" style={{ height: 26, display: "block" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "none" }}>
+            <div style={{ display: "flex", gap: 2, background: C.track, borderRadius: 5, padding: 4 }}>
+              {tabs.map(t => (
+                <button key={t.v} type="button" onClick={() => up("tab", t.v)}
+                  aria-pressed={tab === t.v} style={TAB(tab === t.v)}>{t.label}</button>
+              ))}
+            </div>
+            <FullscreenButton />
+          </div>
+        </div>
+
+        {/* tittel */}
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 32, flex: "none" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: ".08em", color: C.text2, textTransform: "uppercase" }}>Lånekalkulator</div>
+            <h1 style={{
+              margin: "2px 0 0", fontSize: 27, lineHeight: 1.1, fontWeight: 500,
+              letterSpacing: "-.02em", color: C.navy, whiteSpace: "nowrap",
+            }}>Regn ut hva lånet koster</h1>
+          </div>
+          <div style={{ fontSize: 12, lineHeight: 1.5, color: C.text, maxWidth: 560, textAlign: "right" }}>
+            Juster lånebeløp, rente og nedbetalingstid, og se månedskostnad, totale renter og full
+            nedbetalingsplan. Kalkulatoren gir en veiledende beregning.
+          </div>
+        </div>
+
+        {/* innhold */}
+        {/* Kalkulatorkortene tar 9/10 av høyden; resten er luft nederst */}
+        {tab === "calc" && <React.Fragment>{calcTab}<div style={{ flex: 1, minHeight: 0 }} aria-hidden="true" /></React.Fragment>}
+        {tab === "plan" && planTab}
+        {tab === "graph" && graphTab}
+        {tab === "adv" && advTab}
+        {tab === "advplan" && advPlanTab}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
