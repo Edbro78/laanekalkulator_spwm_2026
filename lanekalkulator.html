@@ -156,6 +156,44 @@ function graceTerms(s) {
   return Math.max(0, Math.min(Math.round(t), Math.max(0, termCount(s) - 1)));
 }
 
+/* Avdragsfriheten fra Kalkulator-fanen, sett per år: et år er avdragsfritt
+   så snart første termin i året er det */
+function graceFieldYears(s) {
+  const g = graceTerms(s);
+  return Array.from({ length: s.years }, (_, y) => y * s.ppy < g);
+}
+
+/* Avdragsfrihet per år i Avansert-fanen. Uten en tegnet kurve gjelder feltet i Kalkulator-fanen. */
+function graceYearList(s) {
+  if (!s.graceYears) return graceFieldYears(s);
+  return Array.from({ length: s.years }, (_, y) => {
+    if (s.graceYears[y] != null) return !!s.graceYears[y];
+    if (s.graceYears.length) return !!s.graceYears[s.graceYears.length - 1];
+    return false;
+  });
+}
+
+/* Sammenhengende år med samme valg slås sammen, som for rentekurven */
+function graceSegments(list) {
+  const out = [];
+  list.forEach((on, i) => {
+    const last = out[out.length - 1];
+    if (last && last.on === on) last.end = i;
+    else out.push({ on, start: i, end: i });
+  });
+  return out;
+}
+
+function graceSeries(s, adv) {
+  const n = termCount(s);
+  if (!adv || !s.graceStepsOn) {
+    const g = graceTerms(s);
+    return Array.from({ length: n }, (_, m) => m < g);
+  }
+  const per = graceYearList(s);
+  return Array.from({ length: n }, (_, m) => per[Math.min(per.length - 1, Math.floor(m / s.ppy))]);
+}
+
 function assetAt(s, term) {
   if (s.scenario === "fall") return s.assetValue * 0.9;
   if (s.scenario === "growth") return s.assetValue * Math.pow(1.02, term / s.ppy);
@@ -176,18 +214,23 @@ function ltvDiscount(s, balance, term, adv) {
 function schedule(s, adv) {
   const n = termCount(s);
   const rates = rateSeries(s, adv);
-  const g = graceTerms(s), amortN = Math.max(1, n - g);
-  let balance = s.amount, ann = 0;
+  const gr = graceSeries(s, adv);
+  /* En avdragsfri termin er en pause: restgjelden står stille, så nedbetalingen
+     regnes mot terminene som faktisk har avdrag – uansett hvor de ligger */
+  const amortLeft = new Array(n + 2).fill(0);
+  for (let m = n; m >= 1; m--) amortLeft[m] = amortLeft[m + 1] + (gr[m - 1] ? 0 : 1);
+  const amortN = Math.max(1, amortLeft[1]);
+  let balance = s.amount, ann = 0, prevGrace = true;
   const rows = [];
   for (let m = 1; m <= n; m++) {
     const eff = Math.max(0, rates[m - 1] - ltvDiscount(s, balance, m - 1, adv));
     const r = eff / 100 / s.ppy;
     const interest = balance * r;
     let principal = 0;
-    if (m > g) {
-      const left = n - m + 1;
+    if (!gr[m - 1]) {
+      const left = Math.max(1, amortLeft[m]);
       if (s.type === "annuitet") {
-        if (m === g + 1 || rates[m - 1] !== rates[m - 2]) {
+        if (prevGrace || rates[m - 1] !== rates[m - 2]) {
           ann = r > 0 ? balance * r / (1 - Math.pow(1 + r, -left)) : balance / left;
         }
         principal = ann - interest;
@@ -195,12 +238,13 @@ function schedule(s, adv) {
         principal = s.amount / amortN;
       }
     }
+    prevGrace = gr[m - 1];
     if (m === n || principal > balance) principal = balance;
     if (principal < 0) principal = 0;
     balance -= principal;
     rows.push({
       m, interest, principal, term: interest + principal + s.fee,
-      balance: Math.max(0, balance), grace: m <= g,
+      balance: Math.max(0, balance), grace: gr[m - 1],
       rate: rates[m - 1], effRate: eff,
     });
   }
@@ -244,7 +288,8 @@ function buildPlan(s, adv) {
       rate: chunk.reduce((a, r) => a + r.effRate, 0) / chunk.length,
     });
   }
-  return { rows, n, g: graceTerms(s), totalInterest, totalFees, totalPaid, lastTerm, eff, years };
+  const g = rows.reduce((a, r) => a + (r.grace ? 1 : 0), 0);
+  return { rows, n, g, totalInterest, totalFees, totalPaid, lastTerm, eff, years };
 }
 
 /* Tabellrader — samme funksjon for begge visninger */
@@ -763,6 +808,127 @@ function RateCurve({ s, setYearRates, disabled }) {
   );
 }
 
+/* Avdragsfrihet tegnes med samme grep som renten, men kurven har bare to nivåer:
+   du tar tak i et år og drar opp eller ned, og valget gjelder derfra og ut løpetiden */
+function GraceCurve({ s, setGraceYears, disabled }) {
+  const boxRef = useRef(null);
+  const [dragging, setDragging] = useState(false);
+  const fromRef = useRef(0);
+  const baseRef = useRef(null);
+  const list = disabled ? graceFieldYears(s) : graceYearList(s);
+  const segs = graceSegments(list);
+
+  const paint = e => {
+    const el = boxRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const cs = window.getComputedStyle(el);
+    const padT = parseFloat(cs.paddingTop) || 0;
+    const h = rect.height - padT - (parseFloat(cs.paddingBottom) || 0);
+    if (!(h > 0)) return;
+    const y = e.clientY - rect.top - padT;
+    if (!Number.isFinite(y)) return;
+    const on = 1 - y / h >= 0.5;
+    const next = (baseRef.current || list).slice();
+    for (let i = fromRef.current; i < next.length; i++) next[i] = on;
+    setGraceYears(next);
+  };
+
+  const grab = e => {
+    const el = boxRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width) return;
+    const cs = window.getComputedStyle(el);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const w = rect.width - padL - (parseFloat(cs.paddingRight) || 0);
+    if (!(w > 0)) return;
+    const x = e.clientX - rect.left - padL;
+    if (!Number.isFinite(x)) return;
+    fromRef.current = Math.max(0, Math.min(s.years - 1, Math.floor(x / w * s.years)));
+    baseRef.current = list.slice();
+  };
+
+  const on = segs.filter(sg => sg.on);
+  const count = list.reduce((a, v) => a + (v ? 1 : 0), 0);
+  const spans = on.map(sg => "år " + (sg.start + 1) + (sg.end > sg.start ? "–" + (sg.end + 1) : ""));
+  const lastAmort = list.lastIndexOf(false) + 1;
+  /* Løpetiden ligger fast, så avdragene presses inn i årene som har avdrag.
+     Er de siste årene avdragsfrie, er lånet altså nedbetalt før pausen starter. */
+  const note = (count === 0
+    ? "Ingen avdragsfrihet – avdrag fra første termin."
+    : "Avdragsfri " + (spans.length <= 4 ? spans.join(" · ") : count + " av " + s.years + " år") + ". "
+      + (count === s.years
+        ? "Ingen avdrag underveis – hele lånet forfaller på siste termin."
+        : list[list.length - 1]
+          ? "Avdragene tas før pausen, så lånet er nedbetalt ved utgangen av år " + lastAmort + "."
+          : "Avdragene fordeles på de " + (s.years - count) + " årene med avdrag."))
+    /* Kurven gjelder bare denne fanen, så si fra når den setter feltet til side */
+    + (!disabled && s.graceYears && graceTerms(s) > 0
+      ? " Overstyrer de " + s.grace + " " + s.graceUnit + " i Kalkulator-fanen." : "");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 6 }}>
+      <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
+        <div style={{
+          width: 44, flex: "none", display: "flex", flexDirection: "column",
+          justifyContent: "space-between", fontSize: 9.5, color: C.text3, textAlign: "right",
+          padding: "0 0 2px",
+        }}>
+          <span>Avdragsfri</span><span>Avdrag</span>
+        </div>
+        <div ref={boxRef}
+          onPointerDown={disabled ? undefined : e => {
+            e.currentTarget.setPointerCapture?.(e.pointerId);
+            setDragging(true); grab(e); paint(e);
+          }}
+          onPointerMove={disabled ? undefined : e => { if (dragging) paint(e); }}
+          onPointerUp={disabled ? undefined : () => { setDragging(false); baseRef.current = null; }}
+          onPointerLeave={disabled ? undefined : () => { setDragging(false); baseRef.current = null; }}
+          style={{
+            flex: 1, minWidth: 0, position: "relative", background: C.zebra,
+            border: "1px solid " + C.border, borderRadius: 8, padding: 8,
+            display: "flex", alignItems: "flex-end", gap: 3,
+            touchAction: "none", userSelect: "none", cursor: disabled ? "default" : "ns-resize",
+          }}>
+          {list.map((v, i) => (
+            <div key={i} title={disabled ? undefined : "År " + (i + 1) + " · " + (v ? "avdragsfri" : "med avdrag")}
+              style={{
+                flex: 1, minWidth: 0, height: v ? "100%" : "10%",
+                background: disabled ? "#F4F6F8" : v ? C.blueSoft : C.track,
+                borderTop: "3px solid " + (disabled ? C.inputBorder : v ? C.blue : C.inputBorder),
+              }} />
+          ))}
+          {disabled && (
+            <div style={{
+              position: "absolute", left: 0, right: 0, top: "38%", textAlign: "center",
+              fontSize: 12, color: C.text2, pointerEvents: "none", padding: "0 24px",
+            }}>
+              Slå på for å velge avdragsfrihet fra et valgt år og ut løpetiden.<br />
+              {graceTerms(s) > 0
+                ? "Grunnplanen har " + s.grace + " " + s.graceUnit + " avdragsfrihet."
+                : "Grunnplanen har avdrag fra første termin."}
+            </div>
+          )}
+          <div style={{ position: "absolute", inset: 8, pointerEvents: "none" }}>
+            {!disabled && on.filter(sg => (sg.end - sg.start + 1) / s.years >= 0.18).map(sg => (
+              <div key={sg.start} style={{
+                position: "absolute", top: 7,
+                left: sg.start / s.years * 100 + "%",
+                width: (sg.end - sg.start + 1) / s.years * 100 + "%",
+                textAlign: "center", fontSize: 11.5, fontWeight: 600, color: C.blue, whiteSpace: "nowrap",
+              }}>Avdragsfri</div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div style={{ paddingLeft: 52 }}><YearAxis years={s.years} /></div>
+      <Help style={{ paddingLeft: 52 }}>{note}</Help>
+    </div>
+  );
+}
+
 /* ============================================================================
    Nedbetalingstabell
    ========================================================================== */
@@ -832,6 +998,8 @@ function App() {
     /* debtFreeAge = age + years fra start, siden de to nå holdes i takt */
     stepsOn: false, yearRates: null, age: 35, debtFreeAge: 60, assetValue: 14000000, income: 2000000,
     ltvOn: false, scenario: "flat",
+    /* graceYears = null betyr at avdragsfriheten fra Kalkulator-fanen gjelder */
+    graceStepsOn: false, graceYears: null,
   });
   const up = (k, v) => setS(p => ({ ...p, [k]: v }));
   /* Avdragsfriheten kan ikke overleve et bytte av enhet eller kortere løpetid */
@@ -1107,7 +1275,7 @@ function App() {
     <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0 }}>
       <Help style={{ fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         <span style={{ fontWeight: 600, color: C.navy, fontSize: 13 }}>Avanserte funksjoner. </span>
-        Renteendringer underveis, alder og gjeldfrihet, belåningsgrad og rentetrapp. Endringene her vises i fanen «Plan (avansert)».
+        Renteendringer og avdragsfrihet underveis, alder og gjeldfrihet, belåningsgrad og rentetrapp. Endringene her vises i «Plan (avansert)».
       </Help>
 
       <div style={{
@@ -1164,7 +1332,23 @@ function App() {
           </div>
         </Card>
 
-        {/* Ledig rute nederst til venstre, under renteendringene */}
+        {/* Avdragsfrihet underveis */}
+        <Card pad={16} style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+            <CardTitle sub="Dra opp for avdragsfrihet. Valget gjelder fra året du tar tak i og ut løpetiden.">
+              Avdragsfrihet underveis
+            </CardTitle>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flex: "none" }}>
+              {s.graceStepsOn && s.graceYears && (
+                <button type="button" className="lnk" onClick={() => up("graceYears", null)}>
+                  <Icon name="reset" size={15} />Nullstill
+                </button>
+              )}
+              <Switch on={s.graceStepsOn} onChange={v => up("graceStepsOn", v)} label="Avdragsfrihet underveis" />
+            </div>
+          </div>
+          <GraceCurve s={s} setGraceYears={v => up("graceYears", v)} disabled={!s.graceStepsOn} />
+        </Card>
 
         {/* Belåningsgrad over tid */}
         <Card pad={16} style={{ gridColumn: 2, gridRow: 2, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
@@ -1214,6 +1398,7 @@ function App() {
   const diffText = (diff > 0.5 ? "+" : diff < -0.5 ? "−" : "") + nok(Math.abs(diff));
   const advSub = (s.stepsOn ? "trinnvis rente" : "flat rente")
     + (s.ltvOn ? " · rentetrapp etter belåningsgrad" : "")
+    + (s.graceStepsOn ? " · tegnet avdragsfrihet" : "")
     + " · " + s.years + " år · " + s.ppy + " terminer per år";
 
   const advPlanTab = (
@@ -1229,7 +1414,7 @@ function App() {
       }}>
         <StatCell label="Første termin" value={nok(adv.rows[0].term)} />
         <StatCell label="Totale renter" value={nok(adv.totalInterest)} />
-        <StatCell label="Mot flat rente" value={diffText} accent={diffColor} />
+        <StatCell label="Mot grunnplanen" value={diffText} accent={diffColor} />
         <StatCell label="Totalt å betale" value={nok(adv.totalPaid)} accent={C.blue} last />
       </div>
       <PlanTable plan={adv} s={s} view={s.view} showRate />

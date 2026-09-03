@@ -23,16 +23,17 @@ Layouten er dimensjonert for 1280 × 800 effektive piksler (1920 × 1200 med 150
 | Kalkulator | Inndata og resultat: terminbeløp, effektiv rente, totale renter, gebyrer, samt renter og avdrag per år |
 | Nedbetalingsplan | Full terminplan for grunnlånet, per år eller per termin |
 | Grafisk | Restgjeld og betalt totalt som søylediagram, og hva terminbeløpet går til |
-| Avansert | Renteendringer underveis, alder og gjeldfrihet, belåningsgrad og rentetrapp |
+| Avansert | Renteendringer og avdragsfrihet underveis, alder og gjeldfrihet, belåningsgrad og rentetrapp |
 | Plan (avansert) | Samme plan med rentekolonne, og differansen i totalkostnad mot flat rente |
 
 ## Beregninger
 
 Kalkulatoren regner annuitetslån og serielån, med valgfritt antall terminer per år (1, 2, 4, 6 eller 12) og avdragsfri periode i måneder eller år. Effektiv rente finnes ved binærsøk på internrenten av terminbeløpene mot netto utbetalt beløp.
 
-To avanserte funksjoner påvirker rentebanen:
+Tre avanserte funksjoner endrer planen, og gjelder bare i fanene «Avansert» og «Plan (avansert)»:
 
 - **Renteendringer underveis.** Dra i rentekurven for å sette renten. Endringen gjelder fra året du tar tak i og ut løpetiden, så du kan legge inn flere trinn etter hverandre. I annuitetslån rekalkuleres annuiteten på gjenstående gjeld og gjenstående terminer ved hver renteendring.
+- **Avdragsfrihet underveis.** Samme grep i en kurve med to nivåer: dra opp for avdragsfrihet fra året du tar tak i og ut løpetiden, og dra ned et senere år for å avslutte perioden. Kurven overstyrer avdragsfriheten fra Kalkulator-fanen. Løpetiden ligger fast, så avdragene fordeles på årene som har avdrag – er de siste årene avdragsfrie, er lånet nedbetalt før pausen starter.
 - **Rentetrapp etter belåningsgrad.** Renten settes ned 0,25 prosentpoeng for hvert nivå lånet faller under: 85 %, 75 % og 60 % av verdien på sikkerheten. Verdien kan følge et prisscenario med fall på 10 %, uendret nivå eller vekst på 2 % per år.
 
 Alder og målet for gjeldfrihet henger sammen med nedbetalingstiden: setter du målet til 39 år når du er 35, blir løpetiden 4 år. Endrer du løpetiden i stedet, flyttes målet tilsvarende.
