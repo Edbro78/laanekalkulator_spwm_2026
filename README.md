@@ -36,6 +36,8 @@ Tre avanserte funksjoner endrer planen, og gjelder bare i fanene «Avansert» og
 - **Avdragsfrihet underveis.** Samme grep i en kurve med to nivåer: dra opp for avdragsfrihet fra året du tar tak i og ut løpetiden, og dra ned et senere år for å avslutte perioden. Kurven overstyrer avdragsfriheten fra Kalkulator-fanen. Løpetiden ligger fast, så avdragene fordeles på årene som har avdrag – er de siste årene avdragsfrie, er lånet nedbetalt før pausen starter.
 - **Rentetrapp etter belåningsgrad.** Renten settes ned 0,25 prosentpoeng for hvert nivå lånet faller under: 85 %, 75 % og 60 % av verdien på sikkerheten. Verdien kan følge et prisscenario med fall på 10 %, uendret nivå eller vekst på 2 % per år.
 
+Søylediagrammet «Belåningsgrad over tid» viser belåningsgraden ved utgangen av hvert år. Søylene er fargelagt etter nivå, og året lånet passerer 90 %, 80 % og 60 % er merket på nivålinjen. Merk at dette er andre nivåer enn rentetrappen bruker; `LTV_MARKS` styrer diagrammet og `RATE_STEPS` styrer prisingen.
+
 Alder og målet for gjeldfrihet henger sammen med nedbetalingstiden: setter du målet til 39 år når du er 35, blir løpetiden 4 år. Endrer du løpetiden i stedet, flyttes målet tilsvarende.
 
 Siste termin nuller alltid restgjelden, og avdragsfriheten kan aldri spise hele løpetiden.

@@ -200,15 +200,16 @@ function assetAt(s, term) {
   return s.assetValue;
 }
 
+/* Rentetrappen: renten settes ned 0,25 prosentpoeng for hvert nivå lånet faller under */
+const RATE_STEPS = [85, 75, 60];
+const stepText = RATE_STEPS.map(t => t + " %").join(", ").replace(/, (\d+ %)$/, " og $1");
+
 function ltvDiscount(s, balance, term, adv) {
   if (!adv || !s.ltvOn) return 0;
   const a = assetAt(s, term);
   if (!(a > 0)) return 0;
   const ltv = balance / a * 100;
-  if (ltv <= 60) return 0.75;
-  if (ltv <= 75) return 0.50;
-  if (ltv <= 85) return 0.25;
-  return 0;
+  return RATE_STEPS.filter(t => ltv <= t).length * 0.25;
 }
 
 function schedule(s, adv) {
@@ -930,6 +931,82 @@ function GraceCurve({ s, setGraceYears, disabled }) {
 }
 
 /* ============================================================================
+   Søylediagram — belåningsgrad per år
+   ========================================================================== */
+/* Nivåene lånet er verdt å følge med på */
+const LTV_MARKS = [90, 80, 60];
+
+function LtvBars({ plan, s, startLTV }) {
+  const data = plan.years.map((y, i) => {
+    const a = assetAt(s, (i + 1) * s.ppy);
+    return { year: i + 1, age: s.age + i + 1, ltv: a > 0 ? y.balance / a * 100 : 0 };
+  });
+  const top = Math.max(100, startLTV, ...data.map(d => d.ltv));
+  const H = v => Math.max(0, Math.min(1, v / top)) * 100;
+  const band = v => v > 90 ? C.navy : v > 80 ? C.blue : v > 60 ? C.blue2 : C.blueSoft;
+
+  /* Året lånet først faller under hvert nivå. Merkelappen henges på nivålinjen,
+     så to nivåer som passeres samme år ikke legger seg oppå hverandre. */
+  const crossings = [];
+  LTV_MARKS.forEach(mark => {
+    if (startLTV <= mark) return;
+    const i = data.findIndex(d => d.ltv <= mark);
+    if (i >= 0) crossings.push({ mark, i, age: data[i].age });
+  });
+  const crossYears = new Set(crossings.map(c => c.i));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div style={{
+        position: "relative", flex: 1, minHeight: 96, display: "flex", alignItems: "flex-end",
+        gap: data.length > 20 ? 2 : 4, borderBottom: "1px solid " + C.inputBorder,
+      }}>
+        {LTV_MARKS.map(t => (
+          <div key={t} style={{
+            position: "absolute", left: 0, right: 0, bottom: H(t) + "%",
+            borderTop: "1px dashed " + C.inputBorder, pointerEvents: "none",
+          }} />
+        ))}
+        {data.map((d, i) => (
+          <div key={d.year} title={"År " + d.year + " · " + d.age + " år · " + pct1(d.ltv)}
+            style={{
+              flex: 1, minWidth: 0, height: H(d.ltv) + "%", borderRadius: "3px 3px 0 0",
+              background: band(d.ltv),
+              /* ringen må vises både på de mørke og de lyse søylene */
+              boxShadow: crossYears.has(i)
+                ? "inset 0 0 0 1.5px " + (d.ltv > 80 ? "#fff" : C.navy) : "none",
+            }} />
+        ))}
+        {LTV_MARKS.map(t => (
+          <div key={"m" + t} style={{
+            position: "absolute", right: 0, bottom: H(t) + "%", transform: "translateY(50%)",
+            background: "#fff", padding: "0 3px", fontSize: 10.5, fontWeight: 600,
+            color: C.text3, whiteSpace: "nowrap", pointerEvents: "none",
+          }}>{t} %</div>
+        ))}
+        {crossings.map(c => {
+          const end = (c.i + 0.5) / data.length > 0.78;
+          return (
+            <div key={"c" + c.mark} style={{
+              position: "absolute", bottom: H(c.mark) + "%",
+              ...(end
+                ? { right: 26, transform: "translateY(50%)" }
+                : { left: ((c.i + 0.5) / data.length * 100) + "%", transform: "translate(-50%, 50%)" }),
+              background: "#fff", border: "1px solid " + C.blue2, borderRadius: 100,
+              padding: "1px 7px", fontSize: 10.5, fontWeight: 600, color: C.blue,
+              whiteSpace: "nowrap", pointerEvents: "none",
+            }}>{c.mark} % ved {c.age} år</div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.text3, marginTop: 4 }}>
+        <span>{s.age} år</span><span>{s.age + s.years} år</span>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
    Nedbetalingstabell
    ========================================================================== */
 function PlanTable({ plan, s, view, showRate }) {
@@ -1244,16 +1321,10 @@ function App() {
     const a = assetAt(s, i + 1);
     return a > 0 ? r.balance / a * 100 : 0;
   });
-  const ltvTop = Math.max(100, startLTV, ...ltvPts);
-  const LY = v => 200 - Math.max(0, Math.min(1, v / ltvTop)) * 198;
-  const LX = i => (ltvPts.length > 0 ? i / ltvPts.length * 1000 : 0);
-  const ltvAll = [[0, LY(startLTV)]].concat(ltvPts.map((v, i) => [LX(i + 1), LY(v)]));
-  const ltvLine = ltvAll.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
-  const ltvArea = ltvLine + " L1000,200 L0,200 Z";
-
-  let nextStep = "Under 60 % allerede";
-  if (startLTV > 60) {
-    const thr = [85, 75, 60].find(t => t < startLTV);
+  const lowStep = RATE_STEPS[RATE_STEPS.length - 1];
+  let nextStep = "Under " + lowStep + " % allerede";
+  if (startLTV > lowStep) {
+    const thr = RATE_STEPS.find(t => t < startLTV);
     const idx = ltvPts.findIndex(v => v <= thr);
     nextStep = idx === -1 ? "Nås ikke i løpetiden"
       : thr + " % ved " + (s.age + Math.ceil((idx + 1) / s.ppy)) + " år";
@@ -1325,7 +1396,7 @@ function App() {
           </div>
           <Divider />
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-            <CardTitle sub="Banker priser i trapper. Renten settes ned 0,25 % for hvert nivå lånet faller under: 85 %, 75 % og 60 % av verdien.">
+            <CardTitle sub={"Banker priser i trapper. Renten settes ned 0,25 % for hvert nivå lånet faller under: " + stepText + " av verdien."}>
               Rentetrapp ved lavere belåningsgrad
             </CardTitle>
             <Switch on={s.ltvOn} onChange={v => up("ltvOn", v)} label="Rentetrapp ved lavere belåningsgrad" />
@@ -1357,27 +1428,7 @@ function App() {
             <Segment grow={false} value={s.scenario} onChange={v => up("scenario", v)}
               options={[{ v: "fall", label: "Fall 10 %" }, { v: "flat", label: "Uendret" }, { v: "growth", label: "+2 % p.a." }]} />
           </div>
-          <div style={{ position: "relative", flex: 1, minHeight: 96 }}>
-            <svg viewBox="0 0 1000 200" preserveAspectRatio="none" style={{ display: "block", width: "100%", height: "100%" }}>
-              {[85, 75, 60].map(t => (
-                <line key={t} x1="0" x2="1000" y1={LY(t)} y2={LY(t)} stroke={C.border} strokeWidth="1"
-                  strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
-              ))}
-              <line x1="0" y1="199" x2="1000" y2="199" stroke={C.inputBorder} strokeWidth="1" vectorEffect="non-scaling-stroke" />
-              <path d={ltvArea} fill={C.blue} fillOpacity="0.07" />
-              <path d={ltvLine} fill="none" stroke={C.blue} strokeWidth="2.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-            </svg>
-            {[85, 75, 60].map(t => (
-              <div key={t} style={{
-                position: "absolute", right: 0, top: (LY(t) / 200 * 100) + "%",
-                transform: "translateY(-100%)", background: "#fff", padding: "0 3px",
-                fontSize: 10.5, fontWeight: 600, color: C.text3, whiteSpace: "nowrap",
-              }}>{t} %</div>
-            ))}
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.text3 }}>
-            <span>{s.age} år</span><span>{s.age + s.years} år</span>
-          </div>
+          <LtvBars plan={adv} s={s} startLTV={startLTV} />
           <div style={{
             display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 1,
             background: C.border, border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden",
