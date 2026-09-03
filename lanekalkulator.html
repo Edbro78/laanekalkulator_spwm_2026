@@ -77,6 +77,20 @@
     font-size:12.5px;font-weight:600;display:inline-flex;align-items:center;gap:4px;}
   .lnk:hover{color:var(--blue-pressed);}
 
+  /* ---------- nøkkeltall i stresstest ---------- */
+  .kpi{width:100%;border-collapse:collapse;}
+  .kpi th{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-500);
+    text-align:left;padding:6px 8px;border-bottom:1px solid var(--gray-200);background:var(--gray-50);white-space:nowrap;}
+  .kpi th.r,.kpi td.r{text-align:right;}
+  .kpi td{font-size:11.5px;color:var(--sp-navy);padding:7px 8px;border-bottom:1px solid var(--gray-100);
+    vertical-align:top;line-height:1.35;}
+  .kpi td.r{font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap;}
+  .kpi tr:last-child td{border-bottom:none;}
+  .kpi .muted{color:var(--gray-500);font-weight:400;font-size:10.5px;}
+  .kpi .ok{color:var(--blue-main);}
+  .kpi .warn{color:#B54708;}
+  .kpi .bad{color:var(--error-700);}
+
   @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
 </style>
 </head>
@@ -104,6 +118,8 @@ const C = {
   inputBorder: "#D0D5DD", text: "#475467", text2: "#667085", text3: "#98A2B3",
   strong: "#101828", label: "#344054", zebra: "#FCFCFD", track: "#F6F7F9",
   sec800: "#264472", red: "#B42318",
+  green: "#2F6F4E", greenMuted: "#5B8F6E",
+  blueMuted: "#5B8FC7",
 };
 
 /* ============================================================================
@@ -117,7 +133,6 @@ const grp = n => {
 const nok = v => grp(Number.isFinite(v) ? v : 0) + " kr";
 const pct = v => (Number.isFinite(v) ? v : 0).toFixed(2).replace(".", ",") + " %";
 const pct1 = v => (Number.isFinite(v) ? v : 0).toFixed(1).replace(".", ",") + " %";
-const pct0 = v => Math.round(Number.isFinite(v) ? v : 0) + " %";
 
 /* ============================================================================
    Beregningsmotor
@@ -194,17 +209,13 @@ function graceSeries(s, adv) {
   return Array.from({ length: n }, (_, m) => per[Math.min(per.length - 1, Math.floor(m / s.ppy))]);
 }
 
-/* Tilleggssikkerhet legges til sikkerheten og følger samme prisscenario */
+/* Tilleggssikkerhet legges til pantet når belåningsgraden regnes */
 function assetAt(s, term) {
-  const v = s.assetValue + (s.extraAsset || 0);
-  if (s.scenario === "fall") return v * 0.9;
-  if (s.scenario === "growth") return v * Math.pow(1.02, term / s.ppy);
-  return v;
+  return s.assetValue + (s.extraAsset || 0);
 }
 
 /* Rentetrappen: renten settes ned 0,25 prosentpoeng for hvert nivå lånet faller under */
 const RATE_STEPS = [85, 75, 60];
-const stepText = RATE_STEPS.map(t => t + " %").join(", ").replace(/, (\d+ %)$/, " og $1");
 
 function ltvDiscount(s, balance, term, adv) {
   if (!adv || !s.ltvOn) return 0;
@@ -218,11 +229,10 @@ function schedule(s, adv) {
   const n = termCount(s);
   const rates = rateSeries(s, adv);
   const gr = graceSeries(s, adv);
-  /* En avdragsfri termin er en pause: restgjelden står stille, så nedbetalingen
-     regnes mot terminene som faktisk har avdrag – uansett hvor de ligger */
-  const amortLeft = new Array(n + 2).fill(0);
-  for (let m = n; m >= 1; m--) amortLeft[m] = amortLeft[m + 1] + (gr[m - 1] ? 0 : 1);
-  const amortN = Math.max(1, amortLeft[1]);
+  /* Avdraget dimensjoneres mot den valgte løpetiden – ikke bare mot terminene
+     med avdrag. Avdragsfrihet er en pause i nedbetalingen: restgjelden står
+     stille, og løpetiden forlenges ikke. Ligger pausen på slutten, blir du
+     derfor ikke gjeldfri innenfor perioden. */
   let balance = s.amount, ann = 0, prevGrace = true;
   const rows = [];
   for (let m = 1; m <= n; m++) {
@@ -231,18 +241,21 @@ function schedule(s, adv) {
     const interest = balance * r;
     let principal = 0;
     if (!gr[m - 1]) {
-      const left = Math.max(1, amortLeft[m]);
+      const left = n - m + 1;
       if (s.type === "annuitet") {
         if (prevGrace || rates[m - 1] !== rates[m - 2]) {
           ann = r > 0 ? balance * r / (1 - Math.pow(1 + r, -left)) : balance / left;
         }
         principal = ann - interest;
       } else {
-        principal = s.amount / amortN;
+        principal = s.amount / n;
       }
     }
     prevGrace = gr[m - 1];
-    if (m === n || principal > balance) principal = balance;
+    if (principal > balance) principal = balance;
+    /* Siste termin nuller bare restgjelden når den faktisk har avdrag.
+       Avdragsfrihet på slutten lar gjelden stå – du blir ikke gjeldfri. */
+    if (m === n && !gr[m - 1]) principal = balance;
     if (principal < 0) principal = 0;
     balance -= principal;
     rows.push({
@@ -252,6 +265,64 @@ function schedule(s, adv) {
     });
   }
   return rows;
+}
+
+/* Topplån har høyere rente og får alt avdrag før grunnlånet. Terminbeløpet
+   dekker renter på begge pluss det samlede avdraget fra to parallelle planer;
+   avdraget fordeles til topplånet først. Når topplånet er borte, går hele
+   avdraget til grunnlånet. */
+function schedulePriority(s, topRate, adv) {
+  const mainRef = schedule(s, adv);
+  const topRef = schedule({
+    ...s, amount: s.topAmount, rate: Math.max(0, topRate),
+    stepsOn: false, yearRates: null, graceStepsOn: false, graceYears: null,
+    grace: 0, fee: 0, setup: 0, deed: 0,
+  }, false);
+  const n = mainRef.length;
+  const rates = rateSeries(s, adv);
+  const topPct = Math.max(0, topRate);
+  const rTop = topPct / 100 / s.ppy;
+
+  let mainBal = s.amount, topBal = s.topAmount;
+  const mainRows = [], topRows = [];
+
+  for (let m = 1; m <= n; m++) {
+    const debt = mainBal + topBal;
+    const effMain = Math.max(0, rates[m - 1] - ltvDiscount(s, debt, m - 1, adv));
+    const rMain = effMain / 100 / s.ppy;
+    const iMain = mainBal * rMain;
+    const iTop = topBal * rTop;
+    const grace = mainRef[m - 1].grace;
+
+    let avail = mainRef[m - 1].principal + topRef[m - 1].principal;
+    if (avail < 0) avail = 0;
+
+    /* Avdrag til topplånet først. Under avdragsfrihet på grunnlånet er
+       mainRef.principal = 0, så grunnlånet får bare avdrag når topplånet
+       er ferdig og «frigjort» topplån-avdrag blir ledig. */
+    let pTop = Math.min(topBal, avail);
+    let pMain = Math.min(mainBal, Math.max(0, avail - pTop));
+
+    if (m === n && !grace) {
+      pTop = topBal;
+      pMain = mainBal;
+    }
+    if (pTop < 0) pTop = 0;
+    if (pMain < 0) pMain = 0;
+
+    mainBal = Math.max(0, mainBal - pMain);
+    topBal = Math.max(0, topBal - pTop);
+
+    mainRows.push({
+      m, interest: iMain, principal: pMain, term: iMain + pMain + s.fee,
+      balance: mainBal, grace, rate: rates[m - 1], effRate: effMain,
+    });
+    topRows.push({
+      m, interest: iTop, principal: pTop, term: iTop + pTop,
+      balance: topBal, grace: false, rate: topPct, effRate: topPct,
+    });
+  }
+  return { mainRows, topRows };
 }
 
 /* Effektiv rente — binærsøk (80 iterasjoner) på IRR, deretter annualisert */
@@ -269,14 +340,13 @@ function effectiveRate(rows, net, ppy) {
   return Number.isFinite(out) ? out : 0;
 }
 
-function buildPlan(s, adv) {
-  const rows = schedule(s, adv);
+function buildPlanFromRows(rows, s, amount) {
   const n = rows.length;
   const totalInterest = rows.reduce((a, r) => a + r.interest, 0);
   const totalFees = n * s.fee + s.setup + s.deed;
   const totalPaid = rows.reduce((a, r) => a + r.term, 0) + s.setup + s.deed;
   const lastTerm = rows[n - 1].term;
-  const eff = effectiveRate(rows, s.amount - s.setup - s.deed, s.ppy);
+  const eff = effectiveRate(rows, amount - s.setup - s.deed, s.ppy);
 
   const years = [];
   for (let y = 0; y * s.ppy < n; y++) {
@@ -292,22 +362,92 @@ function buildPlan(s, adv) {
     });
   }
   const g = rows.reduce((a, r) => a + (r.grace ? 1 : 0), 0);
-  return { rows, n, g, totalInterest, totalFees, totalPaid, lastTerm, eff, years };
+  return {
+    rows, n, g, totalInterest, totalFees, totalPaid, lastTerm, eff, years,
+    amount, feePerTerm: s.fee, setupDeed: s.setup + s.deed,
+  };
+}
+
+function buildPlan(s, adv) {
+  return buildPlanFromRows(schedule(s, adv), s, s.amount);
+}
+
+/* Grunnlån + topplån med avdragsprioritet til topplånet */
+function buildLoanPair(s, topRate, adv) {
+  const main = buildPlan(s, adv);
+  if (!(s.topAmount > 0)) return { main, top: null };
+  const topS = { ...s, fee: 0, setup: 0, deed: 0 };
+  const { mainRows, topRows } = schedulePriority(s, topRate, adv);
+  return {
+    main: buildPlanFromRows(mainRows, s, s.amount),
+    top: buildPlanFromRows(topRows, topS, s.topAmount),
+  };
+}
+
+/* Slår sammen grunnlån og topplån til én plan for Plan (avansert) */
+function mergePlans(main, top) {
+  if (!top) return main;
+  const rows = main.rows.map((r, i) => {
+    const t = top.rows[i] || {
+      interest: 0, principal: 0, term: 0, balance: 0, grace: false, rate: 0, effRate: 0,
+    };
+    const mb = r.balance + r.principal;
+    const tb = t.balance + t.principal;
+    const effRate = mb + tb > 0 ? (r.effRate * mb + t.effRate * tb) / (mb + tb) : r.effRate;
+    return {
+      m: r.m,
+      interest: r.interest + t.interest,
+      principal: r.principal + t.principal,
+      term: r.term + t.term,
+      balance: r.balance + t.balance,
+      grace: r.grace,
+      rate: effRate,
+      effRate,
+    };
+  });
+  const n = rows.length;
+  const totalInterest = rows.reduce((a, r) => a + r.interest, 0);
+  const totalFees = main.totalFees + top.totalFees;
+  const totalPaid = rows.reduce((a, r) => a + r.term, 0) + main.setupDeed;
+  const lastTerm = rows[n - 1].term;
+  const years = [];
+  const ppy = Math.max(1, Math.round(n / main.years.length));
+  for (let y = 0; y * ppy < n; y++) {
+    const chunk = rows.slice(y * ppy, (y + 1) * ppy);
+    years.push({
+      year: y + 1, chunk,
+      interest: chunk.reduce((a, r) => a + r.interest, 0),
+      principal: chunk.reduce((a, r) => a + r.principal, 0),
+      term: chunk.reduce((a, r) => a + r.term, 0),
+      balance: chunk[chunk.length - 1].balance,
+      grace: chunk.some(r => r.grace),
+      rate: chunk.reduce((a, r) => a + r.effRate, 0) / chunk.length,
+    });
+  }
+  return {
+    rows, n, g: main.g, totalInterest, totalFees, totalPaid, lastTerm,
+    eff: main.eff, years,
+    amount: main.amount + top.amount,
+    feePerTerm: main.feePerTerm + top.feePerTerm,
+    setupDeed: main.setupDeed,
+  };
 }
 
 /* Tabellrader — samme funksjon for begge visninger */
 function makeTable(plan, s, view) {
-  const one = s.setup + s.deed;
+  const startAmount = plan.amount != null ? plan.amount : s.amount;
+  const feePer = plan.feePerTerm != null ? plan.feePerTerm : s.fee;
+  const one = plan.setupDeed != null ? plan.setupDeed : (s.setup + s.deed);
   if (view === "year") {
     return plan.years.map((y, i) => {
-      const fees = y.chunk.length * s.fee + (i === 0 ? one : 0);
+      const fees = y.chunk.length * feePer + (i === 0 ? one : 0);
       return {
         key: "y" + y.year, year: y.year,
         termin: y.chunk.length === 1 ? String(y.chunk[0].m)
           : y.chunk[0].m + "–" + y.chunk[y.chunk.length - 1].m,
         rate: y.rate, principal: y.principal, interest: y.interest, fees,
         total: y.term + (i === 0 ? one : 0),
-        balance: y.balance, balancePct: s.amount > 0 ? y.balance / s.amount * 100 : 0,
+        balance: y.balance, balancePct: startAmount > 0 ? y.balance / startAmount * 100 : 0,
         isGrace: y.grace, bg: y.year % 2 === 0 ? C.zebra : "#fff",
       };
     });
@@ -317,12 +457,43 @@ function makeTable(plan, s, view) {
     return {
       key: "m" + r.m, year, termin: String(r.m), rate: r.effRate,
       principal: r.principal, interest: r.interest,
-      fees: s.fee + (i === 0 ? one : 0),
+      fees: feePer + (i === 0 ? one : 0),
       total: r.term + (i === 0 ? one : 0),
-      balance: r.balance, balancePct: s.amount > 0 ? r.balance / s.amount * 100 : 0,
+      balance: r.balance, balancePct: startAmount > 0 ? r.balance / startAmount * 100 : 0,
       isGrace: r.grace, bg: year % 2 === 0 ? C.zebra : "#fff",
     };
   });
+}
+
+/* Stresstest: renteøkning på toppen av Avansert-planen (grunnlån + topplån) */
+const STRESS_SHOCKS = [0, 1, 2, 3, 4, 5];
+const STRESS_SOFT = 40;
+const STRESS_LIMIT = 60;
+const STRESS_RULE = 3;
+
+function shiftLoanRates(s, shock) {
+  const next = { ...s, rate: Math.max(0, s.rate + shock) };
+  if (next.yearRates) next.yearRates = next.yearRates.map(r => Math.max(0, r + shock));
+  return next;
+}
+
+/* Renter og avdrag første året – gebyr holdes utenfor, siden det er lønnens evne til å betjene lånet */
+function year1Service(plan) {
+  const y = plan.years[0];
+  return { interest: y.interest, principal: y.principal, grace: y.grace };
+}
+
+function stressService(s, topRate, shock) {
+  const shifted = shiftLoanRates(s, shock);
+  const pair = buildLoanPair(shifted, Math.max(0, topRate + shock), true);
+  const main = year1Service(pair.main);
+  if (!pair.top) return main;
+  const top = year1Service(pair.top);
+  return {
+    interest: main.interest + top.interest,
+    principal: main.principal + top.principal,
+    grace: main.grace,
+  };
 }
 
 /* Sammenhengende år med samme rente slås sammen til segmenter */
@@ -348,11 +519,15 @@ function Card({ children, pad = 16, style }) {
   return <div style={{ ...CARD, padding: pad, ...style }}>{children}</div>;
 }
 
-const TAB = on => ({
+const TAB = (on, tone) => ({
   flex: "0 0 auto", padding: "6px 13px", border: "none", cursor: "pointer", borderRadius: 4,
   fontFamily: "inherit", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap",
   background: on ? "#fff" : "transparent",
-  color: on ? C.navy : C.text2,
+  color: tone === "green"
+    ? (on ? C.green : C.greenMuted)
+    : tone === "blue"
+      ? (on ? C.blue : C.blueMuted)
+      : (on ? C.navy : C.text2),
   boxShadow: on ? "0 1px 2px rgba(16,24,40,.08)" : "none",
   transition: "background .15s, color .15s",
 });
@@ -635,6 +810,56 @@ function StackedBars({ plan, normalize }) {
 }
 
 /* ============================================================================
+   Stablet søylediagram — akkumulerte renter og avdrag
+   ========================================================================== */
+function CumulativeBars({ plan }) {
+  let cInt = 0, cPrin = 0;
+  const data = plan.years.map(y => {
+    cInt += y.interest;
+    cPrin += y.principal;
+    return { year: y.year, interest: cInt, principal: cPrin, total: cInt + cPrin };
+  });
+  const max = Math.max(...data.map(d => d.total), 1);
+  const nYears = data.length;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
+        <div style={{
+          width: 74, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between",
+          fontSize: 10, color: C.text3, textAlign: "right", padding: "0 0 1px",
+        }}>
+          <span>{nok(max)}</span><span>{nok(max / 2)}</span><span>0 kr</span>
+        </div>
+        <div style={{
+          position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "flex-end",
+          gap: nYears > 20 ? 2 : 4, borderBottom: "1px solid " + C.inputBorder,
+        }}>
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+            <div style={{ position: "absolute", left: 0, right: 0, top: 0, height: 1, background: C.border }} />
+            <div style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 1, background: C.border }} />
+          </div>
+          {data.map(d => {
+            const h = d.total / max * 100;
+            const iShare = d.total > 0 ? d.interest / d.total * 100 : 0;
+            return (
+              <div key={d.year} title={"År " + d.year + " · akkumulerte renter " + nok(d.interest) + " · akkumulerte avdrag " + nok(d.principal)}
+                style={{
+                  flex: 1, minWidth: 0, height: h + "%", display: "flex", flexDirection: "column",
+                  justifyContent: "flex-end", borderRadius: 3, overflow: "hidden", position: "relative",
+                }}>
+                <div style={{ height: iShare + "%", background: C.blue2 }} />
+                <div style={{ height: (100 - iShare) + "%", background: C.blue }} />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ paddingLeft: 82 }}><YearAxis years={nYears} /></div>
+    </div>
+  );
+}
+
+/* ============================================================================
    Søylediagram — restgjeld og betalt totalt per år
    ========================================================================== */
 function DebtBars({ plan, s }) {
@@ -856,20 +1081,18 @@ function GraceCurve({ s, setGraceYears, disabled }) {
   const on = segs.filter(sg => sg.on);
   const count = list.reduce((a, v) => a + (v ? 1 : 0), 0);
   const spans = on.map(sg => "år " + (sg.start + 1) + (sg.end > sg.start ? "–" + (sg.end + 1) : ""));
-  const lastAmort = list.lastIndexOf(false) + 1;
-  /* Løpetiden ligger fast, så avdragene presses inn i årene som har avdrag.
-     Er de siste årene avdragsfrie, er lånet altså nedbetalt før pausen starter. */
+  /* Løpetiden ligger fast. Avdragsfrihet er en pause, ikke en omfordeling av avdrag.
+     Pauser på slutten gir derfor restgjeld – du blir ikke gjeldfri innenfor perioden. */
   const note = (count === 0
     ? "Ingen avdragsfrihet – avdrag fra første termin."
     : "Avdragsfri " + (spans.length <= 4 ? spans.join(" · ") : count + " av " + s.years + " år") + ". "
       + (count === s.years
-        ? "Ingen avdrag underveis – hele lånet forfaller på siste termin."
+        ? "Ingen avdrag i hele løpetiden – restgjelden står urørt."
         : list[list.length - 1]
-          ? "Avdragene tas før pausen, så lånet er nedbetalt ved utgangen av år " + lastAmort + "."
-          : "Avdragene fordeles på de " + (s.years - count) + " årene med avdrag."))
-    /* Kurven gjelder bare denne fanen, så si fra når den setter feltet til side */
+          ? "Avdragsfrihet på slutten: restgjelden blir stående, og du blir ikke gjeldfri innenfor perioden."
+          : "Avdragene følger den valgte løpetiden; pausene midt i lar restgjelden stå stille."))
     + (!disabled && s.graceYears && graceTerms(s) > 0
-      ? " Overstyrer de " + s.grace + " " + s.graceUnit + " i Kalkulator-fanen." : "");
+      ? " Overstyrer de " + s.grace + " " + s.graceUnit + " i Lån-fanen." : "");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 6 }}>
@@ -938,10 +1161,11 @@ function GraceCurve({ s, setGraceYears, disabled }) {
 /* Nivåene lånet er verdt å følge med på */
 const LTV_MARKS = [90, 80, 60];
 
-function LtvBars({ plan, s, startLTV }) {
+function LtvBars({ plan, extraPlan, s, startLTV }) {
   const data = plan.years.map((y, i) => {
     const a = assetAt(s, (i + 1) * s.ppy);
-    return { year: i + 1, age: s.age + i + 1, ltv: a > 0 ? y.balance / a * 100 : 0 };
+    const extra = extraPlan && extraPlan.years[i] ? extraPlan.years[i].balance : 0;
+    return { year: i + 1, age: s.age + i + 1, ltv: a > 0 ? (y.balance + extra) / a * 100 : 0 };
   });
   const top = Math.max(100, startLTV, ...data.map(d => d.ltv));
   const H = v => Math.max(0, Math.min(1, v / top)) * 100;
@@ -1009,10 +1233,95 @@ function LtvBars({ plan, s, startLTV }) {
 }
 
 /* ============================================================================
+   Stresstest — andel av bruttoinntekt til renter og avdrag
+   ========================================================================== */
+function StressChart({ points, income }) {
+  const peak = Math.max(...points.map(p => p.share), STRESS_LIMIT + 10, 50);
+  const top = Math.ceil(peak / 10) * 10;
+  const H = v => Math.max(0, Math.min(1, v / top)) * 100;
+  const axis = [top, top / 2, 0];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+      <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
+        <div style={{
+          width: 44, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between",
+          fontSize: 10, color: C.text3, textAlign: "right", padding: "0 0 1px",
+        }}>
+          {axis.map((v, i) => <span key={i}>{Math.round(v)} %</span>)}
+        </div>
+        <div style={{
+          position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "flex-end",
+          gap: 8, borderBottom: "1px solid " + C.inputBorder, padding: "0 2px",
+        }}>
+          {/* Soft and hard limits */}
+          <div style={{
+            position: "absolute", left: 0, right: 0, bottom: H(STRESS_SOFT) + "%",
+            borderTop: "1px dashed " + C.inputBorder, pointerEvents: "none",
+          }} />
+          <div style={{
+            position: "absolute", left: 0, right: 0, bottom: H(STRESS_LIMIT) + "%",
+            borderTop: "1.5px solid " + C.red, pointerEvents: "none",
+          }} />
+          <div style={{
+            position: "absolute", right: 0, bottom: H(STRESS_LIMIT) + "%", transform: "translateY(50%)",
+            background: "#fff", padding: "0 4px", fontSize: 10.5, fontWeight: 600, color: C.red,
+            whiteSpace: "nowrap", pointerEvents: "none",
+          }}>Limit {STRESS_LIMIT} %</div>
+          <div style={{
+            position: "absolute", right: 0, bottom: H(STRESS_SOFT) + "%", transform: "translateY(50%)",
+            background: "#fff", padding: "0 4px", fontSize: 10.5, fontWeight: 600, color: C.text3,
+            whiteSpace: "nowrap", pointerEvents: "none",
+          }}>Stramt {STRESS_SOFT} %</div>
+
+          {points.map(p => {
+            const h = H(p.share);
+            const iShare = p.paid > 0 ? p.interest / p.paid * 100 : 0;
+            const over = p.share > STRESS_LIMIT;
+            const rule = p.shock === STRESS_RULE;
+            return (
+              <div key={p.shock} title={
+                (p.shock === 0 ? "I dag" : "+" + p.shock + " pp")
+                + " · " + pct1(p.share) + " av inntekt"
+                + " · renter " + nok(p.interest) + " · avdrag " + nok(p.principal)
+              } style={{
+                flex: 1, minWidth: 0, height: h + "%", display: "flex", flexDirection: "column",
+                justifyContent: "flex-end", borderRadius: "4px 4px 0 0", overflow: "hidden",
+                boxShadow: rule ? "inset 0 0 0 2px " + C.navy : "none",
+                opacity: income > 0 ? 1 : 0.35,
+              }}>
+                <div style={{ height: iShare + "%", background: over ? "#F97066" : C.blue2, minHeight: iShare > 0 ? 2 : 0 }} />
+                <div style={{ height: (100 - iShare) + "%", background: over ? C.red : C.blue, minHeight: (100 - iShare) > 0 ? 2 : 0 }} />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        <div style={{ width: 44, flex: "none" }} />
+        <div style={{ flex: 1, display: "flex", gap: 8 }}>
+          {points.map(p => (
+            <div key={p.shock} style={{
+              flex: 1, textAlign: "center", fontSize: 11, fontWeight: p.shock === STRESS_RULE ? 700 : 500,
+              color: p.shock === STRESS_RULE ? C.navy : C.text2, whiteSpace: "nowrap",
+            }}>
+              {p.shock === 0 ? "I dag" : "+" + p.shock}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
    Nedbetalingstabell
    ========================================================================== */
 function PlanTable({ plan, s, view, showRate }) {
   const rows = makeTable(plan, s, view);
+  const startAmount = plan.amount != null ? plan.amount : s.amount;
+  const endBal = plan.rows.length ? plan.rows[plan.rows.length - 1].balance : 0;
+  const principalSum = Math.max(0, startAmount - endBal);
   const cols = showRate
     ? ["År", "Termin", "Rente", "Avdrag", "Renter", "Gebyrer", "Sum betaling", "Restgjeld"]
     : ["År", "Termin", "Avdrag", "Renter", "Gebyrer", "Sum betaling", "Restgjeld"];
@@ -1043,11 +1352,13 @@ function PlanTable({ plan, s, view, showRate }) {
         <tfoot>
           <tr>
             <td className="l" colSpan={showRate ? 3 : 2} style={{ paddingLeft: 24, color: C.text2 }}>Sum</td>
-            <td>{nok(s.amount)}</td>
+            <td>{nok(principalSum)}</td>
             <td>{nok(plan.totalInterest)}</td>
             <td>{nok(plan.totalFees)}</td>
             <td style={{ color: C.blue }}>{nok(plan.totalPaid)}</td>
-            <td style={{ paddingRight: 24 }}>0 kr</td>
+            <td style={{ paddingRight: 24, color: endBal > 0.5 ? C.red : undefined, fontWeight: endBal > 0.5 ? 600 : undefined }}>
+              {nok(endBal)}
+            </td>
           </tr>
         </tfoot>
       </table>
@@ -1061,8 +1372,313 @@ function Footnote({ children }) {
       background: C.zebra, borderTop: "1px solid " + C.border, padding: "9px 24px",
       display: "flex", gap: 8, alignItems: "flex-start", borderRadius: "0 0 12px 12px",
     }}>
-      <Icon name="infoCircle" size={15} style={{ color: C.text3, marginTop: 1 }} />
-      <div style={{ fontSize: 11, lineHeight: 1.45, color: C.text2 }}>{children}</div>
+      <Icon name="infoCircle" size={14} style={{ color: C.text3, flex: "none", marginTop: 1 }} />
+      <div style={{ fontSize: 11.5, lineHeight: 1.45, color: C.text2 }}>{children}</div>
+    </div>
+  );
+}
+
+/* ============================================================================
+   Input / output — lagre og gjenopprett alle felter via tekst
+   ========================================================================== */
+const DEFAULT_STATE = {
+  amount: 10000000, rate: 5.4, years: 25, fee: 45, setup: 2500, deed: 585,
+  ppy: 12, grace: 0, graceUnit: "mnd", type: "annuitet", view: "year", tab: "calc",
+  stepsOn: false, yearRates: null, age: 35, debtFreeAge: 60, assetValue: 14000000, income: 2000000,
+  ltvOn: false, extraAsset: 0,
+  graceStepsOn: false, graceYears: null,
+  topAmount: 0, topRate: null,
+};
+
+const TAB_IDS = ["calc", "plan", "graph", "adv", "more", "advplan"];
+const PPY_OPTS = [1, 2, 4, 6, 12];
+
+/* Norske navn i output, slik at lagrede verdier er lette å lese */
+const IO_FIELDS = [
+  { key: "amount", no: "Lånebeløp" },
+  { key: "rate", no: "Nominell rente" },
+  { key: "years", no: "Nedbetalingstid i år" },
+  { key: "fee", no: "Termingebyr" },
+  { key: "setup", no: "Etableringsgebyr" },
+  { key: "deed", no: "Tinglysningsgebyr" },
+  { key: "ppy", no: "Terminer per år" },
+  { key: "grace", no: "Avdragsfri periode" },
+  { key: "graceUnit", no: "Avdragsfri enhet" },
+  { key: "type", no: "Lånetype" },
+  { key: "view", no: "Planvisning" },
+  { key: "tab", no: "Aktiv fane" },
+  { key: "stepsOn", no: "Renteendringer underveis" },
+  { key: "yearRates", no: "Rente per år" },
+  { key: "age", no: "Din alder" },
+  { key: "debtFreeAge", no: "Gjeldfri ved alder" },
+  { key: "income", no: "Brutto lønn per år" },
+  { key: "assetValue", no: "Verdi på sikkerheten" },
+  { key: "extraAsset", no: "Tilleggssikkerhet" },
+  { key: "ltvOn", no: "Rentetrapp etter belåningsgrad" },
+  { key: "graceStepsOn", no: "Avdragsfrihet underveis" },
+  { key: "graceYears", no: "Avdragsfri per år" },
+  { key: "topAmount", no: "Topplån" },
+  { key: "topRate", no: "Rente på topplån" },
+];
+
+const TAB_NO = {
+  calc: "Lån", plan: "Nedbetalingsplan", graph: "Grafikk",
+  adv: "Lån Avansert", more: "Avansert II", advplan: "Nedbetalingsplan avansert",
+};
+const TAB_FROM_NO = Object.fromEntries(Object.entries(TAB_NO).map(([k, v]) => [v.toLowerCase(), k]));
+
+const jaNei = v => v ? "ja" : "nei";
+const fromJaNei = v => {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  const t = String(v == null ? "" : v).trim().toLowerCase();
+  return t === "ja" || t === "true" || t === "1" || t === "yes";
+};
+
+function exportValue(key, v) {
+  if (key === "graceUnit") return v === "year" ? "år" : "måneder";
+  if (key === "type") return v === "serie" ? "serielån" : "annuitet";
+  if (key === "view") return v === "month" ? "per termin" : "per år";
+  if (key === "tab") return TAB_NO[v] || TAB_NO.calc;
+  if (key === "stepsOn" || key === "graceStepsOn" || key === "ltvOn") return jaNei(v);
+  if (key === "topRate") return v == null ? "automatisk (+2 %)" : v;
+  if (key === "yearRates") return Array.isArray(v) ? v : null;
+  if (key === "graceYears") return Array.isArray(v) ? v.map(jaNei) : null;
+  return v;
+}
+
+function exportState(s) {
+  const data = { "Lånekalkulator": "1.0" };
+  IO_FIELDS.forEach(({ key, no }) => { data[no] = exportValue(key, s[key]); });
+  return JSON.stringify(data, null, 2);
+}
+
+function numOr(v, fallback) {
+  if (typeof v === "string") v = v.replace(/\s/g, "").replace(",", ".");
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function pickField(src, key, no) {
+  if (no in src) return src[no];
+  if (key in src) return src[key];
+  return undefined;
+}
+
+function importState(text) {
+  const raw = JSON.parse(text);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Ugyldig format");
+  }
+  const src = raw.state && typeof raw.state === "object" ? raw.state : raw;
+  const next = { ...DEFAULT_STATE };
+
+  IO_FIELDS.forEach(({ key, no }) => {
+    const v = pickField(src, key, no);
+    if (v === undefined) return;
+
+    if (key === "graceUnit") {
+      const t = String(v).toLowerCase();
+      next.graceUnit = t === "year" || t === "år" || t === "aar" ? "year" : "mnd";
+      return;
+    }
+    if (key === "type") {
+      const t = String(v).toLowerCase();
+      next.type = t.indexOf("serie") >= 0 ? "serie" : "annuitet";
+      return;
+    }
+    if (key === "view") {
+      const t = String(v).toLowerCase();
+      next.view = t.indexOf("termin") >= 0 || t === "month" ? "month" : "year";
+      return;
+    }
+    if (key === "tab") {
+      const t = String(v).trim().toLowerCase();
+      next.tab = TAB_FROM_NO[t] || (TAB_IDS.includes(t) ? t : "calc");
+      return;
+    }
+    if (key === "stepsOn" || key === "graceStepsOn" || key === "ltvOn") {
+      next[key] = fromJaNei(v);
+      return;
+    }
+    if (key === "topRate") {
+      if (v == null || v === "" || String(v).toLowerCase().indexOf("automatisk") >= 0) next.topRate = null;
+      else next.topRate = numOr(v, null);
+      return;
+    }
+    if (key === "yearRates") {
+      next.yearRates = Array.isArray(v) ? v : null;
+      return;
+    }
+    if (key === "graceYears") {
+      next.graceYears = Array.isArray(v) ? v.map(fromJaNei) : null;
+      return;
+    }
+    next[key] = v;
+  });
+
+  next.amount = clamp(numOr(next.amount, DEFAULT_STATE.amount), 0, 100000000);
+  next.rate = clamp(numOr(next.rate, DEFAULT_STATE.rate), 0, 30);
+  next.years = clamp(Math.round(numOr(next.years, DEFAULT_STATE.years)), YEARS_MIN, YEARS_MAX);
+  next.fee = clamp(numOr(next.fee, DEFAULT_STATE.fee), 0, 10000);
+  next.setup = clamp(numOr(next.setup, DEFAULT_STATE.setup), 0, 1000000);
+  next.deed = clamp(numOr(next.deed, DEFAULT_STATE.deed), 0, 1000000);
+  next.ppy = PPY_OPTS.includes(+next.ppy) ? +next.ppy : DEFAULT_STATE.ppy;
+  next.graceUnit = next.graceUnit === "year" ? "year" : "mnd";
+  next.grace = clamp(Math.round(numOr(next.grace, 0)), 0, graceMaxFor(next.graceUnit, next.years));
+  next.type = next.type === "serie" ? "serie" : "annuitet";
+  next.view = next.view === "month" ? "month" : "year";
+  next.tab = TAB_IDS.includes(next.tab) ? next.tab : "calc";
+  next.stepsOn = !!next.stepsOn;
+  next.graceStepsOn = !!next.graceStepsOn;
+  next.ltvOn = !!next.ltvOn;
+  next.age = clamp(Math.round(numOr(next.age, DEFAULT_STATE.age)), 18, 80);
+  next.debtFreeAge = next.age + next.years;
+  next.assetValue = clamp(numOr(next.assetValue, DEFAULT_STATE.assetValue), 0, 200000000);
+  next.income = clamp(numOr(next.income, DEFAULT_STATE.income), 0, 100000000);
+  next.extraAsset = clamp(numOr(next.extraAsset, 0), 0, 50000000);
+  next.topAmount = clamp(numOr(next.topAmount, 0), 0, 50000000);
+  if (next.topRate == null || next.topRate === "") next.topRate = null;
+  else next.topRate = clamp(numOr(next.topRate, next.rate + 2), 0, 15);
+
+  if (Array.isArray(next.yearRates) && next.yearRates.length) {
+    next.yearRates = next.yearRates.map(r => clamp(numOr(r, next.rate), 0, 30));
+    while (next.yearRates.length < next.years) next.yearRates.push(next.yearRates[next.yearRates.length - 1]);
+    next.yearRates = next.yearRates.slice(0, next.years);
+  } else {
+    next.yearRates = null;
+  }
+  if (!next.stepsOn) next.yearRates = null;
+
+  if (Array.isArray(next.graceYears) && next.graceYears.length) {
+    next.graceYears = next.graceYears.map(fromJaNei);
+    while (next.graceYears.length < next.years) next.graceYears.push(false);
+    next.graceYears = next.graceYears.slice(0, next.years);
+  } else {
+    next.graceYears = null;
+  }
+  if (!next.graceStepsOn) next.graceYears = null;
+
+  next.grace = Math.min(next.grace, graceMaxFor(next.graceUnit, next.years));
+  return next;
+}
+
+function IoCornerBtn({ label, onClick, side }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button type="button" onClick={onClick} aria-label={label}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{
+        position: "absolute", bottom: 10, [side]: 16, zIndex: 20,
+        padding: "6px 12px", borderRadius: 6, cursor: "pointer",
+        fontFamily: "inherit", fontSize: 12, fontWeight: 600, letterSpacing: ".04em",
+        textTransform: "uppercase",
+        border: "1px solid " + (hover ? C.blue : C.border),
+        background: hover ? C.blueSoft : "#fff",
+        color: hover ? C.blue : C.text2,
+        boxShadow: "0 1px 2px rgba(16,24,40,.06)",
+        transition: "background .15s, border-color .15s, color .15s",
+      }}>{label}</button>
+  );
+}
+
+function IoDialog({ mode, state, onClose, onApply }) {
+  const [text, setText] = useState(() => mode === "out" ? exportState(state) : "");
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const areaRef = useRef(null);
+
+  useEffect(() => {
+    if (areaRef.current) {
+      areaRef.current.focus();
+      if (mode === "out") areaRef.current.select();
+    }
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode, onClose]);
+
+  const copy = () => {
+    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {
+        if (areaRef.current) { areaRef.current.select(); document.execCommand("copy"); done(); }
+      });
+    } else if (areaRef.current) {
+      areaRef.current.select();
+      document.execCommand("copy");
+      done();
+    }
+  };
+
+  const apply = () => {
+    try {
+      onApply(importState(text));
+      onClose();
+    } catch (e) {
+      setErr("Kunne ikke lese teksten. Lim inn hele output-teksten (JSON).");
+    }
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label={mode === "out" ? "Output" : "Input"}
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 100, background: "rgba(16,24,40,.45)",
+        display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+      }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: "min(560px, 100%)", maxHeight: "min(720px, 90vh)",
+        background: "#fff", borderRadius: 12, border: "1px solid " + C.border,
+        boxShadow: "0 16px 40px rgba(16,24,40,.18)",
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      }}>
+        <div style={{
+          padding: "14px 18px 10px", display: "flex", alignItems: "flex-start",
+          justifyContent: "space-between", gap: 12, borderBottom: "1px solid " + C.border,
+        }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 600, color: C.navy }}>
+              {mode === "out" ? "Output" : "Input"}
+            </div>
+            <Help style={{ marginTop: 2 }}>
+              {mode === "out"
+                ? "Kopier teksten (norske feltnavn) og lagre den. Lim den senere inn via Input for å gjenopprette alle felter."
+                : "Lim inn en tidligere Output-tekst for å fylle alle feltene i dashbordet."}
+            </Help>
+          </div>
+          <button type="button" className="lnk" onClick={onClose} aria-label="Lukk">Lukk</button>
+        </div>
+        <div style={{ padding: 16, flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+          <textarea ref={areaRef} value={text} readOnly={mode === "out"}
+            onChange={e => { setText(e.target.value); setErr(""); }}
+            spellCheck={false}
+            style={{
+              width: "100%", flex: 1, minHeight: 320, resize: "vertical",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+              fontSize: 12, lineHeight: 1.45, color: C.navy,
+              border: "1px solid " + C.inputBorder, borderRadius: 8, padding: 12,
+              background: mode === "out" ? C.zebra : "#fff",
+            }} />
+          {err && <div style={{ fontSize: 12, color: C.red }}>{err}</div>}
+        </div>
+        <div style={{
+          padding: "12px 16px", borderTop: "1px solid " + C.border,
+          display: "flex", justifyContent: "flex-end", gap: 8,
+        }}>
+          {mode === "out" ? (
+            <button type="button" onClick={copy} style={{
+              padding: "8px 14px", borderRadius: 6, border: "none", cursor: "pointer",
+              background: C.blue, color: "#fff", fontWeight: 600, fontSize: 13, fontFamily: "inherit",
+            }}>{copied ? "Kopiert" : "Kopier"}</button>
+          ) : (
+            <button type="button" onClick={apply} style={{
+              padding: "8px 14px", borderRadius: 6, border: "none", cursor: "pointer",
+              background: C.blue, color: "#fff", fontWeight: 600, fontSize: 13, fontFamily: "inherit",
+            }}>Bruk</button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1071,15 +1687,8 @@ function Footnote({ children }) {
    Rot-komponent
    ========================================================================== */
 function App() {
-  const [s, setS] = useState({
-    amount: 10000000, rate: 5.4, years: 25, fee: 45, setup: 2500, deed: 585,
-    ppy: 12, grace: 0, graceUnit: "mnd", type: "annuitet", view: "year", tab: "calc",
-    /* debtFreeAge = age + years fra start, siden de to nå holdes i takt */
-    stepsOn: false, yearRates: null, age: 35, debtFreeAge: 60, assetValue: 14000000, income: 2000000,
-    ltvOn: false, scenario: "flat", extraAsset: 0,
-    /* graceYears = null betyr at avdragsfriheten fra Kalkulator-fanen gjelder */
-    graceStepsOn: false, graceYears: null,
-  });
+  const [s, setS] = useState(() => ({ ...DEFAULT_STATE }));
+  const [ioMode, setIoMode] = useState(null); /* "in" | "out" | null */
   const up = (k, v) => setS(p => ({ ...p, [k]: v }));
   /* Avdragsfriheten kan ikke overleve et bytte av enhet eller kortere løpetid */
   const setGraceUnit = u => setS(p => ({ ...p, graceUnit: u, grace: Math.min(p.grace, graceMaxFor(u, p.years)) }));
@@ -1097,7 +1706,10 @@ function App() {
   const setAge = a => setS(p => ({ ...p, age: a, debtFreeAge: a + p.years }));
 
   const base = buildPlan(s, false);
-  const adv = buildPlan(s, true);
+  const topRate = s.topRate == null ? clamp(s.rate + 2, 0, 15) : s.topRate;
+  const pair = buildLoanPair(s, topRate, true);
+  const adv = pair.main;
+  const topPlan = pair.top;
   const tab = s.tab;
 
   const n = base.n, g = base.g;
@@ -1105,11 +1717,12 @@ function App() {
   const typeName = s.type === "annuitet" ? "annuitetslån" : "serielån";
 
   const tabs = [
-    { v: "calc", label: "Kalkulator" },
-    { v: "plan", label: "Nedbetalingsplan" },
-    { v: "graph", label: "Grafisk" },
-    { v: "adv", label: "Avansert" },
-    { v: "advplan", label: "Plan (avansert)" },
+    { v: "calc", label: "Lån", tone: "green" },
+    { v: "plan", label: "Nedbetalingsplan", tone: "green" },
+    { v: "graph", label: "Grafikk" },
+    { v: "adv", label: "Lån Avansert", tone: "blue" },
+    { v: "more", label: "Avansert II", tone: "blue" },
+    { v: "advplan", label: "Nedbetalingsplan avansert" },
   ];
 
   /* ---------- fane: kalkulator ---------- */
@@ -1289,9 +1902,11 @@ function App() {
   );
 
   /* ---------- fane: grafisk ---------- */
-  const firstShare = base.years[0] ? base.years[0].interest / base.years[0].term * 100 : 0;
-  const lastY = base.years[base.years.length - 1];
-  const lastShare = lastY && lastY.term > 0 ? lastY.interest / lastY.term * 100 : 0;
+  const lastYear = base.years[base.years.length - 1];
+  const cumHelp = lastYear
+    ? "Ved utløpet av løpetiden er " + nok(base.totalInterest) + " betalt i renter og "
+      + nok(s.amount) + " i avdrag."
+    : "";
 
   const graphTab = (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, flex: 1, minHeight: 0 }}>
@@ -1305,13 +1920,11 @@ function App() {
 
       <Card pad={16} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <CardTitle>Hva terminbeløpet går til</CardTitle>
-          <Legend items={[{ label: "Renter", color: C.blue2 }, { label: "Avdrag", color: C.blue }]} />
+          <CardTitle>Akkumulerte avdrag og renter</CardTitle>
+          <Legend items={[{ label: "Akkumulerte renter", color: C.blue2 }, { label: "Akkumulerte avdrag", color: C.blue }]} />
         </div>
-        <StackedBars plan={base} normalize />
-        <Help>
-          Første år går {pct0(firstShare)} av terminbeløpet til renter. Siste år er andelen {pct0(lastShare)}.
-        </Help>
+        <CumulativeBars plan={base} />
+        <Help>{cumHelp}</Help>
       </Card>
     </div>
   );
@@ -1319,37 +1932,45 @@ function App() {
   /* ---------- fane: avansert ---------- */
   const advRows = adv.rows;
   const asset0 = assetAt(s, 0);
-  const startLTV = asset0 > 0 ? s.amount / asset0 * 100 : 0;
+  const totalDebt = s.amount + (s.topAmount || 0);
+  const startLTV = asset0 > 0 ? totalDebt / asset0 * 100 : 0;
   const ltvPts = advRows.map((r, i) => {
     const a = assetAt(s, i + 1);
-    return a > 0 ? r.balance / a * 100 : 0;
+    const extra = topPlan && topPlan.rows[i] ? topPlan.rows[i].balance : 0;
+    return a > 0 ? (r.balance + extra) / a * 100 : 0;
   });
-  const lowStep = RATE_STEPS[RATE_STEPS.length - 1];
+  const lowStep = LTV_MARKS[LTV_MARKS.length - 1];
   let nextStep = "Under " + lowStep + " % allerede";
   if (startLTV > lowStep) {
-    const thr = RATE_STEPS.find(t => t < startLTV);
+    const thr = LTV_MARKS.find(t => t < startLTV);
     const idx = ltvPts.findIndex(v => v <= thr);
     nextStep = idx === -1 ? "Nås ikke i løpetiden"
       : thr + " % ved " + (s.age + Math.ceil((idx + 1) / s.ppy)) + " år";
   }
 
   /* Utlånsforskriften setter taket for samlet gjeld ved fem ganger brutto årsinntekt */
-  const dti = s.income > 0 ? s.amount / s.income : 0;
+  const dti = s.income > 0 ? totalDebt / s.income : 0;
   const dtiNote = s.income > 0
     ? "Gjeldsgrad " + dti.toFixed(1).replace(".", ",") + " ganger brutto lønn"
       + (dti > 5 ? " – over grensen på 5 i utlånsforskriften." : " – innenfor grensen på 5 i utlånsforskriften.")
     : "Legg inn brutto lønn for å se gjeldsgraden.";
 
-  /* Målet og løpetiden holdes i takt, så merknaden bekrefter hva valget koster */
-  const debtNote = "Nedbetalingstiden følger målet: " + s.years + " år gir gjeldfrihet ved "
-    + s.debtFreeAge + " år, med " + nok(firstTerm) + " per " + perLabel + "."
-    + (s.years === YEARS_MAX ? " Kalkulatoren regner med maksimalt " + YEARS_MAX + " års løpetid." : "");
+  /* Målet og løpetiden holdes i takt. Avdragsfrihet på slutten kan gjøre at målet ikke nås. */
+  const endBalance = adv.rows.length ? adv.rows[adv.rows.length - 1].balance : 0;
+  const debtFreeLabel = endBalance > 0.5 ? "Restgjeld" : "Gjeldfri";
+  const debtFreeValue = endBalance > 0.5 ? nok(endBalance) : (s.age + s.years) + " år";
+  const debtNote = endBalance > 0.5
+    ? "Avdragsfrihet på slutten gir " + nok(endBalance) + " i restgjeld ved utgangen av perioden. "
+      + "Løpetiden forlenges ikke utover " + s.years + " år."
+    : "Nedbetalingstiden følger målet: " + s.years + " år gir gjeldfrihet ved "
+      + s.debtFreeAge + " år, med " + nok(firstTerm) + " per " + perLabel + "."
+      + (s.years === YEARS_MAX ? " Kalkulatoren regner med maksimalt " + YEARS_MAX + " års løpetid." : "");
 
   const advTab = (
     <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0 }}>
       <Help style={{ fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         <span style={{ fontWeight: 600, color: C.navy, fontSize: 13 }}>Avanserte funksjoner. </span>
-        Renteendringer og avdragsfrihet underveis, alder og gjeldfrihet, belåningsgrad og rentetrapp. Endringene her vises i «Plan (avansert)».
+        Renteendringer og avdragsfrihet underveis, alder, gjeldfrihet og belåningsgrad. Endringene her vises i «Nedbetalingsplan avansert».
       </Help>
 
       <div style={{
@@ -1376,7 +1997,7 @@ function App() {
           <RateCurve s={s} setYearRates={v => up("yearRates", v)} disabled={!s.stepsOn} />
         </Card>
 
-        {/* Alder, gjeldfrihet, sikkerhet + rentetrapp */}
+        {/* Alder, gjeldfrihet og sikkerhet */}
         {/* Kortet har mest innhold i fanen; på lave skjermer får det rullefelt i stedet for å flyte ut */}
         <Card pad={16} style={{ display: "flex", flexDirection: "column", gap: 12, overflowY: "auto" }}>
           <div>
@@ -1396,13 +2017,9 @@ function App() {
               <Slider id="f-asset" label="Verdi på sikkerheten" display={nok(s.assetValue)}
                 value={s.assetValue} min={0} max={70000000} step={100000}
                 onChange={v => up("assetValue", v)} minLabel="0 kr" maxLabel="70 000 000 kr" />
-            </div>
-            <div style={{ marginTop: 8 }}>
-              {/* Summen står i venstre etikett, så kortet ikke vokser når tillegget tas i bruk */}
-              <Slider id="f-extra" label="Tilleggssikkerhet" display={nok(s.extraAsset)}
-                value={s.extraAsset} min={0} max={10000000} step={100000}
-                onChange={v => up("extraAsset", v)} maxLabel="10 000 000 kr"
-                minLabel={s.extraAsset > 0 ? "Samlet sikkerhet " + nok(s.assetValue + s.extraAsset) : "0 kr"} />
+              <Help style={{ marginTop: 4 }}>
+                Tilleggssikkerhet settes under Avansert II. Samlet sikkerhet påvirker belåningsgraden.
+              </Help>
             </div>
           </div>
         </Card>
@@ -1427,40 +2044,270 @@ function App() {
 
         {/* Belåningsgrad over tid */}
         <Card pad={16} style={{ gridColumn: 2, gridRow: 2, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <CardTitle>Belåningsgrad over tid</CardTitle>
-            <Segment grow={false} value={s.scenario} onChange={v => up("scenario", v)}
-              options={[{ v: "fall", label: "Fall 10 %" }, { v: "flat", label: "Uendret" }, { v: "growth", label: "+2 % p.a." }]} />
-          </div>
-          <LtvBars plan={adv} s={s} startLTV={startLTV} />
+          <CardTitle>Belåningsgrad over tid</CardTitle>
+          <LtvBars plan={adv} extraPlan={topPlan} s={s} startLTV={startLTV} />
           <div style={{
             display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 1,
             background: C.border, border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden",
           }}>
             <StatCell label="Belåningsgrad nå" value={pct1(startLTV)} />
-            <StatCell label="Neste rentetrapp" value={nextStep} />
-            <StatCell label="Gjeldfri" value={(s.age + s.years) + " år"} />
+            <StatCell label="Neste nivå" value={nextStep} />
+            <StatCell label={debtFreeLabel} value={debtFreeValue} />
           </div>
           <Help>{debtNote}</Help>
-          {/* Rentetrappen hører til belåningsgraden, så bryteren står sammen med kurven */}
+        </Card>
+      </div>
+    </div>
+  );
+
+  /* ---------- fane: tillegg ---------- */
+  const topTerm = topPlan ? topPlan.rows[0].term : 0;
+  const mainTerm = adv.rows[0].term;
+  const topClearIdx = topPlan ? topPlan.rows.findIndex(r => r.balance < 0.5) : -1;
+  const topClearLabel = topClearIdx < 0 ? null
+    : topClearIdx < s.ppy ? "første året"
+    : "år " + Math.ceil((topClearIdx + 1) / s.ppy);
+  const stressPoints = STRESS_SHOCKS.map(shock => {
+    const svc = stressService(s, topRate, shock);
+    const paid = svc.interest + svc.principal;
+    return {
+      shock,
+      interest: svc.interest,
+      principal: svc.principal,
+      paid,
+      share: s.income > 0 ? paid / s.income * 100 : 0,
+      grace: svc.grace,
+    };
+  });
+  const stressNow = stressPoints[0];
+  const stressRule = stressPoints.find(p => p.shock === STRESS_RULE) || stressPoints[0];
+  const stressOk = stressRule.share <= STRESS_LIMIT;
+  const stressMonth = s.ppy > 0 ? stressRule.paid / s.ppy : 0;
+  const incomeMonth = s.income / 12;
+  const dtiMore = s.income > 0 ? totalDebt / s.income : 0;
+  const dstiNow = stressNow.share;
+  const rentShare = s.income > 0 ? stressNow.interest / s.income * 100 : 0;
+  const dtiOk = dtiMore <= 5;
+  const dstiOk = dstiNow <= 50;
+  const dstiSoft = dstiNow > STRESS_SOFT && dstiNow <= 50;
+
+  const moreTab = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0 }}>
+      <Help style={{ fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        <span style={{ fontWeight: 600, color: C.navy, fontSize: 13 }}>Flere funksjoner. </span>
+        Topplån, tilleggssikkerhet og stresstest av betjeningsevne. Bygger på grunnlån og valgene i Lån Avansert.
+      </Help>
+      <div style={{
+        display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)",
+        gridTemplateRows: "minmax(0,1fr) minmax(0,1fr)", gap: 12, flex: 1, minHeight: 0,
+      }}>
+        <Card pad={16} style={{
+          gridColumn: 1, gridRow: "1 / span 2",
+          display: "flex", flexDirection: "column", gap: 10, minHeight: 0, overflowY: "auto",
+        }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-            <CardTitle size={14} sub={"Renten settes ned 0,25 % for hvert nivå lånet faller under: " + stepText + " av verdien."}>
-              Rentetrapp ved lavere belåningsgrad
+            <CardTitle sub={"Andel av brutto årsinntekt som går til renter og avdrag første året. "
+              + "Søylene følger renteøkningen; avdraget faller bort i avdragsfrie perioder."}>
+              Stresstest – betjeningsevne
             </CardTitle>
-            <Switch on={s.ltvOn} onChange={v => up("ltvOn", v)} label="Rentetrapp ved lavere belåningsgrad" />
+            <Legend items={[
+              { label: "Renter", color: C.blue2 },
+              { label: "Avdrag", color: C.blue },
+            ]} />
           </div>
+
+          {s.income > 0 ? (
+            <React.Fragment>
+              <StressChart points={stressPoints} income={s.income} />
+              <div style={{
+                display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 1,
+                background: C.border, border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden",
+              }}>
+                <StatCell label="I dag" value={pct1(stressNow.share)}
+                  sub={nok(stressNow.paid / Math.max(1, s.ppy)) + " / " + perLabel} />
+                <StatCell label={"+" + STRESS_RULE + " pp (forskrift)"} value={pct1(stressRule.share)}
+                  sub={nok(stressMonth) + " / " + perLabel}
+                  accent={stressOk ? C.blue : C.red} />
+                <StatCell label="Rom til limit"
+                  value={stressOk
+                    ? pct1(STRESS_LIMIT - stressRule.share)
+                    : "−" + pct1(stressRule.share - STRESS_LIMIT)}
+                  accent={stressOk ? C.navy : C.red}
+                  last />
+              </div>
+
+              <div style={{
+                border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden", flex: "none",
+              }}>
+                <table className="kpi">
+                  <thead>
+                    <tr>
+                      <th>Nøkkeltall</th>
+                      <th>Hva det måler</th>
+                      <th>Typisk krav</th>
+                      <th className="r">Her</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Gjeldsgrad <span className="muted">(DTI)</span></td>
+                      <td>Total gjeld mot brutto inntekt</td>
+                      <td>Maks 5× inntekt</td>
+                      <td className={"r " + (dtiOk ? "ok" : "bad")}>
+                        {dtiMore.toFixed(1).replace(".", ",")}×
+                        <div className="muted">{dtiOk ? "Innenfor" : "Over grensen"}</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Betjeningsgrad <span className="muted">(DSTI)</span></td>
+                      <td>Renter + avdrag / inntekt</td>
+                      <td>Ofte maks 40–50 %</td>
+                      <td className={"r " + (dstiOk ? (dstiSoft ? "warn" : "ok") : "bad")}>
+                        {pct1(dstiNow)}
+                        <div className="muted">
+                          {dstiOk ? (dstiSoft ? "Stramt" : "Innenfor") : "Over norm"}
+                        </div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Rentebelastning</td>
+                      <td>Kun renter / inntekt</td>
+                      <td>Sårbarhet ved rentetopp</td>
+                      <td className="r">
+                        {pct1(rentShare)}
+                        <div className="muted">{nok(stressNow.interest / Math.max(1, s.ppy)) + " / " + perLabel}</div>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Tålegrense</td>
+                      <td>Betjeningsevne ved +{STRESS_RULE} % renteøkning</td>
+                      <td>Obligatorisk i bankene</td>
+                      <td className={"r " + (stressOk ? "ok" : "bad")}>
+                        {pct1(stressRule.share)}
+                        <div className="muted">{stressOk ? "Tåler +" + STRESS_RULE + " pp" : "Tåler ikke +" + STRESS_RULE + " pp"}</div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <Help>
+                {stressNow.grace
+                  ? "Første året er delvis eller helt avdragsfritt, så søylene er rente-tunge. "
+                  : "Første året inkluderer både renter og avdrag. "}
+                Tallene bygger på samlet lån {nok(totalDebt)} og bruttoinntekt {nok(s.income)}
+                {" "}({nok(incomeMonth)} per måned). Betjeningsgrad og tålegrense er målt mot bruttoinntekt.
+              </Help>
+            </React.Fragment>
+          ) : (
+            <div style={{
+              flex: 1, minHeight: 120, display: "flex", alignItems: "center", justifyContent: "center",
+              background: C.zebra, border: "1px solid " + C.border, borderRadius: 8, padding: 24,
+            }}>
+              <Help style={{ textAlign: "center", fontSize: 13 }}>
+                Legg inn brutto lønn per år i Lån Avansert for å se stresstesten.
+              </Help>
+            </div>
+          )}
+        </Card>
+
+        <Card pad={16} style={{
+          gridColumn: 2, gridRow: "1 / span 2",
+          display: "flex", flexDirection: "column", gap: 12, overflowY: "auto",
+        }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+              <CardTitle sub="Høyere rente enn grunnlånet – derfor nedbetales topplånet først. Samme løpetid og terminer.">
+                Topplån
+              </CardTitle>
+              {s.topRate != null && (
+                <button type="button" className="lnk" onClick={() => up("topRate", null)}>
+                  <Icon name="reset" size={15} />Grunnlån + 2 %
+                </button>
+              )}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <Slider id="f-top-amount" label="Topplån" display={nok(s.topAmount)}
+                value={s.topAmount} min={0} max={20000000} step={50000}
+                onChange={v => up("topAmount", v)}
+                minLabel={s.topAmount > 0 ? "Samlet lån " + nok(s.amount + s.topAmount) : "0 kr"}
+                maxLabel="20 000 000 kr" />
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <Slider id="f-top-rate" label="Nominell rente" display={pct(topRate)}
+                value={topRate} min={0} max={15} step={0.05}
+                onChange={v => up("topRate", v)}
+                minLabel="0,00 %" maxLabel="15,00 %" />
+              <Help style={{ marginTop: 4 }}>
+                {s.topRate == null
+                  ? "2 prosentpoeng over grunnlånet på " + pct(s.rate) + ". Avdrag går til topplånet først."
+                  : "Satt manuelt. Grunnlånet ligger på " + pct(s.rate) + ". Avdrag går til topplånet først."}
+                {topClearLabel ? " Topplånet er nedbetalt i " + topClearLabel + "." : ""}
+              </Help>
+            </div>
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid " + C.border }}>
+              <Slider id="f-extra" label="Tilleggssikkerhet" display={nok(s.extraAsset)}
+                value={s.extraAsset} min={0} max={10000000} step={100000}
+                onChange={v => up("extraAsset", v)} minLabel="0 kr" maxLabel="10 000 000 kr" />
+              <div style={{
+                marginTop: 10, display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 1,
+                background: C.border, border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden",
+              }}>
+                <StatCell label="Pant" value={nok(s.assetValue)} />
+                <StatCell label="Tillegg" value={nok(s.extraAsset)} />
+                <StatCell label="Sum sikkerhet" value={nok(s.assetValue + s.extraAsset)} accent={C.blue} last />
+              </div>
+              <Help style={{ marginTop: 4 }}>
+                Pantet settes under Lån Avansert. Sum sikkerhet brukes i belåningsgraden.
+              </Help>
+            </div>
+          </div>
+          {s.topAmount > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: "auto" }}>
+              <div style={{
+                display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 1,
+                background: C.border, border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden",
+              }}>
+                <StatCell label={"Topplån per " + perLabel} value={nok(topTerm)} />
+                <StatCell label="Renter topplån" value={nok(topPlan.totalInterest)} />
+                <StatCell label="Totalt topplån" value={nok(topPlan.totalPaid)} last />
+              </div>
+              <div style={{
+                display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 1,
+                background: C.border, border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden",
+              }}>
+                <StatCell label={"Grunnlån per " + perLabel} value={nok(mainTerm)} />
+                <StatCell label="Renter grunnlån" value={nok(adv.totalInterest)} />
+                <StatCell label="Totalt grunnlån" value={nok(adv.totalPaid)} last />
+              </div>
+              <div style={{
+                display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 1,
+                background: C.border, border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden",
+              }}>
+                <StatCell label={"Samlet per " + perLabel} value={nok(mainTerm + topTerm)} accent={C.blue} />
+                <StatCell label="Samlede renter" value={nok(adv.totalInterest + topPlan.totalInterest)} accent={C.blue} />
+                <StatCell label="Samlet totalt" value={nok(adv.totalPaid + topPlan.totalPaid)} accent={C.blue} last />
+              </div>
+            </div>
+          ) : (
+            <Help style={{ marginTop: "auto" }}>
+              Dra beløpet opp for å legge inn et topplån ved siden av grunnlånet på {nok(s.amount)}.
+            </Help>
+          )}
         </Card>
       </div>
     </div>
   );
 
   /* ---------- fane: plan (avansert) ---------- */
-  const diff = adv.totalPaid - base.totalPaid;
+  const fullAdv = mergePlans(adv, topPlan);
+  const fullEnd = fullAdv.rows[fullAdv.rows.length - 1].balance;
+  const diff = fullAdv.totalPaid - base.totalPaid;
   const diffColor = diff > 0.5 ? C.red : diff < -0.5 ? C.blue : C.text2;
   const diffText = (diff > 0.5 ? "+" : diff < -0.5 ? "−" : "") + nok(Math.abs(diff));
   const advSub = (s.stepsOn ? "trinnvis rente" : "flat rente")
-    + (s.ltvOn ? " · rentetrapp etter belåningsgrad" : "")
     + (s.graceStepsOn ? " · tegnet avdragsfrihet" : "")
+    + (s.topAmount > 0 ? " · topplån " + nok(s.topAmount) : "")
     + " · " + s.years + " år · " + s.ppy + " terminer per år";
 
   const advPlanTab = (
@@ -1471,18 +2318,23 @@ function App() {
           options={[{ v: "year", label: "Per år" }, { v: "month", label: "Per termin" }]} />
       </div>
       <div style={{
-        display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 1,
+        display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 1,
         background: C.border, borderTop: "1px solid " + C.border, borderBottom: "1px solid " + C.border,
       }}>
-        <StatCell label="Første termin" value={nok(adv.rows[0].term)} />
-        <StatCell label="Totale renter" value={nok(adv.totalInterest)} />
+        <StatCell label="Første termin" value={nok(fullAdv.rows[0].term)} />
+        <StatCell label="Totale renter" value={nok(fullAdv.totalInterest)} />
         <StatCell label="Mot grunnplanen" value={diffText} accent={diffColor} />
-        <StatCell label="Totalt å betale" value={nok(adv.totalPaid)} accent={C.blue} last />
+        {fullEnd > 0.5
+          ? <StatCell label="Restgjeld til slutt" value={nok(fullEnd)} accent={C.red} />
+          : null}
+        <StatCell label="Totalt å betale" value={nok(fullAdv.totalPaid)} accent={C.blue} last />
       </div>
-      <PlanTable plan={adv} s={s} view={s.view} showRate />
+      <PlanTable plan={fullAdv} s={s} view={s.view} showRate />
       <Footnote>
-        Rentekolonnen viser renten som faktisk er brukt i terminen, inkludert renteendringer du har lagt
-        inn og eventuell rentetrapp etter belåningsgrad.
+        Planen slår sammen grunnlån og eventuelt topplån. Avdrag går til topplånet først
+        (høyere rente), deretter til grunnlånet. Rentekolonnen er veid rente når lånene
+        har ulik rente. «Avdragsfri» gjelder grunnlånet. Avdragsfrihet på slutten gir restgjeld
+        i stedet for gjeldfrihet – løpetiden forlenges ikke.
       </Footnote>
     </Card>
   );
@@ -1490,6 +2342,7 @@ function App() {
   /* ---------- ramme ---------- */
   return (
     <div style={{
+      position: "relative",
       height: "100%", background: C.canvas, padding: "14px 20px 16px",
       display: "flex", flexDirection: "column", gap: 12, overflow: "hidden",
     }}>
@@ -1502,7 +2355,7 @@ function App() {
             <div style={{ display: "flex", gap: 2, background: C.track, borderRadius: 5, padding: 4 }}>
               {tabs.map(t => (
                 <button key={t.v} type="button" onClick={() => up("tab", t.v)}
-                  aria-pressed={tab === t.v} style={TAB(tab === t.v)}>{t.label}</button>
+                  aria-pressed={tab === t.v} style={TAB(tab === t.v, t.tone)}>{t.label}</button>
               ))}
             </div>
             <FullscreenButton />
@@ -1530,8 +2383,17 @@ function App() {
         {tab === "plan" && planTab}
         {tab === "graph" && graphTab}
         {tab === "adv" && advTab}
+        {tab === "more" && moreTab}
         {tab === "advplan" && advPlanTab}
       </div>
+
+      <IoCornerBtn label="input" side="left" onClick={() => setIoMode("in")} />
+      <IoCornerBtn label="output" side="right" onClick={() => setIoMode("out")} />
+      {ioMode && (
+        <IoDialog key={ioMode} mode={ioMode} state={s}
+          onClose={() => setIoMode(null)}
+          onApply={next => setS(next)} />
+      )}
     </div>
   );
 }
