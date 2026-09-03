@@ -194,10 +194,12 @@ function graceSeries(s, adv) {
   return Array.from({ length: n }, (_, m) => per[Math.min(per.length - 1, Math.floor(m / s.ppy))]);
 }
 
+/* Tilleggssikkerhet legges til sikkerheten og følger samme prisscenario */
 function assetAt(s, term) {
-  if (s.scenario === "fall") return s.assetValue * 0.9;
-  if (s.scenario === "growth") return s.assetValue * Math.pow(1.02, term / s.ppy);
-  return s.assetValue;
+  const v = s.assetValue + (s.extraAsset || 0);
+  if (s.scenario === "fall") return v * 0.9;
+  if (s.scenario === "growth") return v * Math.pow(1.02, term / s.ppy);
+  return v;
 }
 
 /* Rentetrappen: renten settes ned 0,25 prosentpoeng for hvert nivå lånet faller under */
@@ -1074,7 +1076,7 @@ function App() {
     ppy: 12, grace: 0, graceUnit: "mnd", type: "annuitet", view: "year", tab: "calc",
     /* debtFreeAge = age + years fra start, siden de to nå holdes i takt */
     stepsOn: false, yearRates: null, age: 35, debtFreeAge: 60, assetValue: 14000000, income: 2000000,
-    ltvOn: false, scenario: "flat",
+    ltvOn: false, scenario: "flat", extraAsset: 0,
     /* graceYears = null betyr at avdragsfriheten fra Kalkulator-fanen gjelder */
     graceStepsOn: false, graceYears: null,
   });
@@ -1316,7 +1318,8 @@ function App() {
 
   /* ---------- fane: avansert ---------- */
   const advRows = adv.rows;
-  const startLTV = s.assetValue > 0 ? s.amount / assetAt(s, 0) * 100 : 0;
+  const asset0 = assetAt(s, 0);
+  const startLTV = asset0 > 0 ? s.amount / asset0 * 100 : 0;
   const ltvPts = advRows.map((r, i) => {
     const a = assetAt(s, i + 1);
     return a > 0 ? r.balance / a * 100 : 0;
@@ -1374,7 +1377,8 @@ function App() {
         </Card>
 
         {/* Alder, gjeldfrihet, sikkerhet + rentetrapp */}
-        <Card pad={16} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {/* Kortet har mest innhold i fanen; på lave skjermer får det rullefelt i stedet for å flyte ut */}
+        <Card pad={16} style={{ display: "flex", flexDirection: "column", gap: 12, overflowY: "auto" }}>
           <div>
             <CardTitle>Alder, gjeldfrihet og sikkerhet</CardTitle>
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8, marginTop: 8 }}>
@@ -1393,13 +1397,13 @@ function App() {
                 value={s.assetValue} min={0} max={70000000} step={100000}
                 onChange={v => up("assetValue", v)} minLabel="0 kr" maxLabel="70 000 000 kr" />
             </div>
-          </div>
-          <Divider />
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-            <CardTitle sub={"Banker priser i trapper. Renten settes ned 0,25 % for hvert nivå lånet faller under: " + stepText + " av verdien."}>
-              Rentetrapp ved lavere belåningsgrad
-            </CardTitle>
-            <Switch on={s.ltvOn} onChange={v => up("ltvOn", v)} label="Rentetrapp ved lavere belåningsgrad" />
+            <div style={{ marginTop: 8 }}>
+              {/* Summen står i venstre etikett, så kortet ikke vokser når tillegget tas i bruk */}
+              <Slider id="f-extra" label="Tilleggssikkerhet" display={nok(s.extraAsset)}
+                value={s.extraAsset} min={0} max={10000000} step={100000}
+                onChange={v => up("extraAsset", v)} maxLabel="10 000 000 kr"
+                minLabel={s.extraAsset > 0 ? "Samlet sikkerhet " + nok(s.assetValue + s.extraAsset) : "0 kr"} />
+            </div>
           </div>
         </Card>
 
@@ -1438,6 +1442,13 @@ function App() {
             <StatCell label="Gjeldfri" value={(s.age + s.years) + " år"} />
           </div>
           <Help>{debtNote}</Help>
+          {/* Rentetrappen hører til belåningsgraden, så bryteren står sammen med kurven */}
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+            <CardTitle size={14} sub={"Renten settes ned 0,25 % for hvert nivå lånet faller under: " + stepText + " av verdien."}>
+              Rentetrapp ved lavere belåningsgrad
+            </CardTitle>
+            <Switch on={s.ltvOn} onChange={v => up("ltvOn", v)} label="Rentetrapp ved lavere belåningsgrad" />
+          </div>
         </Card>
       </div>
     </div>
