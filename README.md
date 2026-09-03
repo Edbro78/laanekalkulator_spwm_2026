@@ -4,9 +4,17 @@ Norsk lånekalkulator som ett enkelt dashboard, bygget i Söderberg & Partners' 
 
 ## Kom i gang
 
-Åpne `lanekalkulator.html` i en nettleser. `spwm-logo.svg` må ligge i samme mappe, siden logoen refereres derfra.
+Åpne `lanekalkulator.html` i en nettleser, eller besøk den publiserte siden: <https://edbro78.github.io/laanekalkulator_spwm_2026/>
 
-Layouten er dimensjonert for 1280 × 800 effektive piksler (1920 × 1200 med 150 % skalering) og skal fylle skjermen uten scrolling. Knappen øverst til høyre går i fullskjerm.
+Filen er selvstendig: logoen er bygget inn som data-URI og ikonene er tegnet inline, så den viser alt riktig uansett om den ligger lokalt, på GitHub Pages eller på en hvilken som helst annen webserver. `spwm-logo.svg` ligger igjen i repoet som kilde til logoen, men siden trenger den ikke.
+
+Layouten er dimensjonert for 1280 × 800 effektive piksler (1920 × 1200 med 150 % skalering) og skal fylle skjermen uten scrolling. På mindre skjermer beholder dashbordet målene sine og siden får rullefelt. Knappen øverst til høyre går i fullskjerm.
+
+## Publisering
+
+`.github/workflows/pages.yml` publiserer repoet til GitHub Pages ved hver push til `main`, og skrur på Pages første gang workflowen kjører. Får ikke workflowen lov til det, kan Pages settes opp manuelt under **Settings → Pages** med kilden **GitHub Actions**.
+
+`index.html` sender besøkende videre til `lanekalkulator.html`, slik at rot-adressen åpner kalkulatoren. `.nojekyll` slår av Jekyll-prosesseringen, så filene serveres akkurat slik de ligger i repoet.
 
 ## Faner
 
