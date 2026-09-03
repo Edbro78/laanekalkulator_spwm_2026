@@ -830,7 +830,7 @@ function App() {
     amount: 10000000, rate: 5.4, years: 25, fee: 45, setup: 2500, deed: 585,
     ppy: 12, grace: 0, graceUnit: "mnd", type: "annuitet", view: "year", tab: "calc",
     /* debtFreeAge = age + years fra start, siden de to nå holdes i takt */
-    stepsOn: false, yearRates: null, age: 35, debtFreeAge: 60, assetValue: 14000000,
+    stepsOn: false, yearRates: null, age: 35, debtFreeAge: 60, assetValue: 14000000, income: 2000000,
     ltvOn: false, scenario: "flat",
   });
   const up = (k, v) => setS(p => ({ ...p, [k]: v }));
@@ -1091,6 +1091,13 @@ function App() {
       : thr + " % ved " + (s.age + Math.ceil((idx + 1) / s.ppy)) + " år";
   }
 
+  /* Utlånsforskriften setter taket for samlet gjeld ved fem ganger brutto årsinntekt */
+  const dti = s.income > 0 ? s.amount / s.income : 0;
+  const dtiNote = s.income > 0
+    ? "Gjeldsgrad " + dti.toFixed(1).replace(".", ",") + " ganger brutto lønn"
+      + (dti > 5 ? " – over grensen på 5 i utlånsforskriften." : " – innenfor grensen på 5 i utlånsforskriften.")
+    : "Legg inn brutto lønn for å se gjeldsgraden.";
+
   /* Målet og løpetiden holdes i takt, så merknaden bekrefter hva valget koster */
   const debtNote = "Nedbetalingstiden følger målet: " + s.years + " år gir gjeldfrihet ved "
     + s.debtFreeAge + " år, med " + nok(firstTerm) + " per " + perLabel + "."
@@ -1136,6 +1143,11 @@ function App() {
                 value={s.age} onChange={setAge} />
               <NumField id="f-dfa" small deferred label="Gjeldfri ved alder" suffix="år" min={20} max={90}
                 value={s.debtFreeAge} onChange={setDebtFreeAge} />
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <NumField id="f-income" small grouped label="Brutto lønn per år" suffix="kr"
+                value={s.income} onChange={v => up("income", v)} />
+              <Help style={{ marginTop: 4 }}>{dtiNote}</Help>
             </div>
             <div style={{ marginTop: 10 }}>
               <Slider id="f-asset" label="Verdi på sikkerheten" display={nok(s.assetValue)}
