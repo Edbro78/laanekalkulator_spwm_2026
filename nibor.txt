@@ -1,0 +1,18 @@
+# Rentekurve til «Nibor + påslag» i lånekalkulatoren.
+# Punktene brukes til å danne en kurve fra 3 mnd til 10 år.
+# Format: Navn <tab> Rente <tab> Dato
+#
+# Låneåret henter renten på tilsvarende løpetid (år 1 → 1-års punkt,
+# år 2 → 2-års punkt interpolert, …). Fra og med år 11 brukes 10-års punktet.
+
+Rente	Nivå	Dato
+Styringsrente	4,25 %	Gjeldende
+
+Nibor 3M	4,57 %	12.08.2026
+Statskasseveksel 3 mnd	4,423 %	03.09.2026
+Statskasseveksel 6 mnd	4,512 %	03.09.2026
+Statskasseveksel 12 mnd	4,552 %	03.09.2026
+Statsobligasjon 3 år	4,560 %	03.09.2026
+Statsobligasjon 5 år	4,452 %	03.09.2026
+Statsobligasjon 7 år	4,400 %	03.09.2026
+Statsobligasjon 10 år	4,443 %	03.09.2026
