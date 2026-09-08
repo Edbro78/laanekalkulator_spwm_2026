@@ -91,6 +91,19 @@
   .kpi .warn{color:#B54708;}
   .kpi .bad{color:var(--error-700);}
 
+  /* ---------- forside ---------- */
+  @keyframes forside-in{
+    from{opacity:0;transform:translateY(8px);}
+    to{opacity:1;transform:translateY(0);}
+  }
+  .forside-in{animation:forside-in .5s ease-out both;}
+  .forside-in-2{animation:forside-in .5s ease-out .1s both;}
+  .forside-in-3{animation:forside-in .5s ease-out .2s both;}
+  .forside-chart{animation:forside-in .8s ease-out .15s both;}
+  .forside-cta{transition:background .15s,box-shadow .15s;}
+  .forside-cta:hover{background:var(--blue-pressed) !important;box-shadow:0 4px 14px rgba(10,94,220,.28);}
+  .forside-cta:active{background:#063F96 !important;}
+
   @media (prefers-reduced-motion: reduce){*{transition:none !important;animation:none !important;}}
 </style>
 </head>
@@ -384,11 +397,16 @@ function schedulePriority(s, topRate, adv) {
     let avail = mainRef[m - 1].principal + topRef[m - 1].principal;
     if (avail < 0) avail = 0;
 
-    /* Avdrag til topplånet først. Under avdragsfrihet på grunnlånet er
-       mainRef.principal = 0, så grunnlånet får bare avdrag når topplånet
-       er ferdig og «frigjort» topplån-avdrag blir ledig. */
-    let pTop = Math.min(topBal, avail);
-    let pMain = Math.min(mainBal, Math.max(0, avail - pTop));
+    /* Alltid topplån først: så lenge topplånet har restgjeld, går hele
+       avdragsrommet dit. Først når topplånet er null, går avdrag til grunnlånet. */
+    let pTop = 0, pMain = 0;
+    if (topBal > 0.5) {
+      pTop = Math.min(topBal, avail);
+      const left = avail - pTop;
+      if (topBal - pTop < 0.5 && left > 0) pMain = Math.min(mainBal, left);
+    } else {
+      pMain = Math.min(mainBal, avail);
+    }
 
     if (m === n && !grace) {
       pTop = topBal;
@@ -487,9 +505,13 @@ function mergePlans(main, top) {
       principal: r.principal + t.principal,
       term: r.term + t.term,
       balance: r.balance + t.balance,
+      mainBal: r.balance,
+      topBal: t.balance,
       grace: r.grace,
       rate: effRate,
       effRate,
+      /* True mens topplånet fortsatt får avdrag denne terminen */
+      topPay: (t.principal || 0) > 0.5,
     };
   });
   const n = rows.length;
@@ -501,14 +523,18 @@ function mergePlans(main, top) {
   const ppy = Math.max(1, Math.round(n / main.years.length));
   for (let y = 0; y * ppy < n; y++) {
     const chunk = rows.slice(y * ppy, (y + 1) * ppy);
+    const last = chunk[chunk.length - 1];
     years.push({
       year: y + 1, chunk,
       interest: chunk.reduce((a, r) => a + r.interest, 0),
       principal: chunk.reduce((a, r) => a + r.principal, 0),
       term: chunk.reduce((a, r) => a + r.term, 0),
-      balance: chunk[chunk.length - 1].balance,
+      balance: last.balance,
+      mainBal: last.mainBal,
+      topBal: last.topBal,
       grace: chunk.some(r => r.grace),
       rate: chunk.reduce((a, r) => a + r.effRate, 0) / chunk.length,
+      topPay: chunk.some(r => r.topPay),
     });
   }
   return {
@@ -525,29 +551,45 @@ function makeTable(plan, s, view) {
   const startAmount = plan.amount != null ? plan.amount : s.amount;
   const feePer = plan.feePerTerm != null ? plan.feePerTerm : s.fee;
   const one = plan.setupDeed != null ? plan.setupDeed : (s.setup + s.deed);
+  const pctOf = v => startAmount > 0 ? Math.max(0, v) / startAmount * 100 : 0;
+  const splitBal = row => {
+    if (row.mainBal == null && row.topBal == null) return {};
+    return {
+      topPct: pctOf(row.topBal || 0),
+      mainPct: pctOf(row.mainBal != null ? row.mainBal : row.balance),
+    };
+  };
   if (view === "year") {
     return plan.years.map((y, i) => {
       const fees = y.chunk.length * feePer + (i === 0 ? one : 0);
+      const isTop = !!y.topPay;
       return {
         key: "y" + y.year, year: y.year,
         termin: y.chunk.length === 1 ? String(y.chunk[0].m)
           : y.chunk[0].m + "–" + y.chunk[y.chunk.length - 1].m,
         rate: y.rate, principal: y.principal, interest: y.interest, fees,
         total: y.term + (i === 0 ? one : 0),
-        balance: y.balance, balancePct: startAmount > 0 ? y.balance / startAmount * 100 : 0,
-        isGrace: y.grace, bg: y.year % 2 === 0 ? C.zebra : "#fff",
+        balance: y.balance, balancePct: pctOf(y.balance),
+        topBalance: y.topBal != null ? y.topBal : null,
+        isGrace: y.grace, isTop,
+        bg: isTop ? C.blueSoft : (y.year % 2 === 0 ? C.zebra : "#fff"),
+        ...splitBal(y),
       };
     });
   }
   return plan.rows.map((r, i) => {
     const year = Math.ceil(r.m / s.ppy);
+    const isTop = !!r.topPay;
     return {
       key: "m" + r.m, year, termin: String(r.m), rate: r.effRate,
       principal: r.principal, interest: r.interest,
       fees: feePer + (i === 0 ? one : 0),
       total: r.term + (i === 0 ? one : 0),
-      balance: r.balance, balancePct: startAmount > 0 ? r.balance / startAmount * 100 : 0,
-      isGrace: r.grace, bg: year % 2 === 0 ? C.zebra : "#fff",
+      balance: r.balance, balancePct: pctOf(r.balance),
+      topBalance: r.topBal != null ? r.topBal : null,
+      isGrace: r.grace, isTop,
+      bg: isTop ? C.blueSoft : (year % 2 === 0 ? C.zebra : "#fff"),
+      ...splitBal(r),
     };
   });
 }
@@ -763,12 +805,64 @@ function NumField({ id, label, value, onChange, suffix, step = 1, min = 0, max, 
   );
 }
 
-function Slider({ id, label, display, value, min, max, step, onChange, minLabel, maxLabel }) {
+function Slider({ id, label, display, value, min, max, step, onChange, minLabel, maxLabel, editable, editAs = "int" }) {
+  const [draft, setDraft] = useState(null);
+  const formatDraft = v => editAs === "pct"
+    ? (Number.isFinite(v) ? v : 0).toFixed(2).replace(".", ",")
+    : grp(v);
+  const parseDraft = raw => {
+    if (editAs === "pct") return parsePctNo(raw);
+    const digits = String(raw == null ? "" : raw).replace(/[^\d]/g, "");
+    return digits === "" ? null : +digits;
+  };
+  const commitEdit = raw => {
+    const n = parseDraft(raw);
+    setDraft(null);
+    onChange(clamp(n == null ? value : n, min, max));
+  };
+  const valueStyle = {
+    fontSize: 18, fontWeight: 600, color: C.navy, fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap", textAlign: "right", fontFamily: "inherit",
+  };
   return (
     <div>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
-        <FieldLabel htmlFor={id}>{label}</FieldLabel>
-        <span style={{ fontSize: 18, fontWeight: 600, color: C.navy, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{display}</span>
+        <FieldLabel htmlFor={editable ? id + "-num" : id}>{label}</FieldLabel>
+        {editable
+          ? <input
+              id={id + "-num"}
+              type="text"
+              inputMode="decimal"
+              aria-label={label}
+              title="Klikk for å taste inn"
+              value={draft !== null ? draft : display}
+              onFocus={() => setDraft(formatDraft(value))}
+              onChange={e => {
+                const raw = e.target.value;
+                setDraft(raw);
+                const n = parseDraft(raw);
+                if (n != null && n >= min && n <= max) onChange(n);
+              }}
+              onBlur={() => commitEdit(draft !== null ? draft : value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") { e.currentTarget.blur(); }
+                if (e.key === "Escape") { setDraft(null); e.currentTarget.blur(); }
+              }}
+              style={{
+                ...valueStyle,
+                width: Math.max(7, String(draft !== null ? draft : display).length) + "ch",
+                maxWidth: "58%",
+                border: "1px solid transparent", borderRadius: 6, background: "transparent",
+                padding: "1px 6px", margin: 0, cursor: "text",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.background = "#fff"; }}
+              onMouseLeave={e => {
+                if (document.activeElement === e.currentTarget) return;
+                e.currentTarget.style.borderColor = "transparent";
+                e.currentTarget.style.background = "transparent";
+              }}
+            />
+          : <span style={valueStyle}>{display}</span>}
       </div>
       <input id={id} className="rng" type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(+e.target.value)} />
@@ -802,6 +896,98 @@ function CardTitle({ children, size = 15, sub }) {
   );
 }
 
+function ForsideChartBg() {
+  /* Diskret silhuett av en nedbetalingsplan — lav kontrast, uten forklaring */
+  const n = 28;
+  const bars = Array.from({ length: n }, (_, i) => {
+    const t = i / (n - 1);
+    const iShare = Math.max(0.08, 0.78 - t * 0.68);
+    const h = 0.38 + (1 - t) * 0.42;
+    return { h, iShare };
+  });
+
+  return (
+    <div className="forside-chart" aria-hidden="true" style={{
+      position: "absolute", inset: 0, pointerEvents: "none", overflow: "hidden",
+    }}>
+      <div style={{
+        position: "absolute",
+        left: "48%", right: 0, top: "28%", bottom: 0,
+        display: "flex", alignItems: "flex-end",
+        gap: 3, padding: "0 48px 40px 0",
+        opacity: 0.2,
+        WebkitMaskImage: "linear-gradient(105deg, transparent 0%, #000 28%)",
+        maskImage: "linear-gradient(105deg, transparent 0%, #000 28%)",
+      }}>
+        {bars.map((b, i) => (
+          <div key={i} style={{
+            flex: 1, minWidth: 0, height: (b.h * 100) + "%",
+            display: "flex", flexDirection: "column", justifyContent: "flex-end",
+            borderRadius: "2px 2px 0 0", overflow: "hidden",
+          }}>
+            <div style={{ height: (b.iShare * 100) + "%", background: "rgba(255,255,255,.55)" }} />
+            <div style={{ height: ((1 - b.iShare) * 100) + "%", background: "rgba(155,192,245,.9)" }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ForsidePanel({ onStart }) {
+  return (
+    <div style={{
+      flex: 1, minHeight: 0, borderRadius: 12,
+      background: [
+        /* Høyre: bredere, skrått fade ut mot bakgrunnen */
+        `linear-gradient(248deg, ${C.canvas} 0%, ${C.canvas} 4%, transparent 46%)`,
+        C.navy,
+      ].join(", "),
+      position: "relative", overflow: "hidden",
+      display: "flex", flexDirection: "column", justifyContent: "center",
+      padding: "clamp(40px, 5vh, 72px) clamp(48px, 6vw, 88px)",
+    }}>
+      <ForsideChartBg />
+
+      <div className="forside-in" style={{ position: "relative", zIndex: 2, maxWidth: 560 }}>
+        <img
+          src={SPWM_LOGO}
+          alt="Söderberg &amp; Partners Wealth Management"
+          style={{ height: 28, display: "block", filter: "brightness(0) invert(1)" }}
+        />
+      </div>
+
+      <div className="forside-in-2" style={{ position: "relative", zIndex: 2, marginTop: "clamp(28px, 4vh, 48px)", maxWidth: 560 }}>
+        <h1 style={{
+          margin: 0, fontSize: "clamp(36px, 4.2vw, 52px)", fontWeight: 500, color: "#fff",
+          letterSpacing: "-.025em", lineHeight: 1.1,
+        }}>Lånekalkulator</h1>
+        <p style={{
+          margin: "18px 0 0", fontSize: "clamp(16px, 1.35vw, 19px)", lineHeight: 1.55, fontWeight: 400,
+          color: "rgba(255,255,255,.78)", maxWidth: 520,
+        }}>
+          Lånekalkulator til bruk i Söderberg &amp; Partners Wealth Management
+          og i Söderberg &amp; Partners Kreditt
+        </p>
+      </div>
+
+      <div className="forside-in-3" style={{ position: "relative", zIndex: 2, marginTop: "clamp(28px, 4vh, 44px)" }}>
+        <button type="button" className="forside-cta" onClick={onStart} style={{
+          appearance: "none", border: "none", cursor: "pointer",
+          background: C.blue, color: "#fff",
+          padding: "12px 22px", borderRadius: 8,
+          fontFamily: "inherit", fontSize: 14, fontWeight: 600,
+          display: "inline-flex", alignItems: "center", gap: 8,
+          boxShadow: "0 1px 2px rgba(16,24,40,.12)",
+        }}>
+          Åpne kalkulator
+          <span aria-hidden="true" style={{ fontSize: 16, lineHeight: 1 }}>→</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function GracePill() {
   return (
     <span style={{
@@ -811,10 +997,39 @@ function GracePill() {
   );
 }
 
-function BalanceBar({ value }) {
+function TopPill() {
   return (
-    <div style={{ width: 84, height: 3, background: C.border, borderRadius: 100, marginTop: 4, marginLeft: "auto", overflow: "hidden" }}>
-      <div style={{ width: Math.max(0, Math.min(100, value)) + "%", height: "100%", background: C.blue }} />
+    <span style={{
+      marginLeft: 6, fontSize: 10, fontWeight: 600, padding: "1px 7px", borderRadius: 100,
+      background: C.blueSoft, border: "1px solid " + C.blue2, color: C.blue, whiteSpace: "nowrap",
+    }}>Topplån</span>
+  );
+}
+
+function BalanceBar({ value, topPct, mainPct }) {
+  const split = topPct != null && mainPct != null;
+  return (
+    <div style={{
+      width: 84, height: 3, background: C.border, borderRadius: 100,
+      marginTop: 4, marginLeft: "auto", overflow: "hidden", display: "flex",
+    }}>
+      {split ? (
+        <React.Fragment>
+          <div style={{
+            width: Math.max(0, Math.min(100, topPct)) + "%", height: "100%",
+            background: "#5B9FFF", flex: "none",
+          }} />
+          <div style={{
+            width: Math.max(0, Math.min(100, mainPct)) + "%", height: "100%",
+            background: C.blue, flex: "none",
+          }} />
+        </React.Fragment>
+      ) : (
+        <div style={{
+          width: Math.max(0, Math.min(100, value)) + "%", height: "100%",
+          background: C.blue,
+        }} />
+      )}
     </div>
   );
 }
@@ -853,12 +1068,63 @@ function YearAxis({ years }) {
   );
 }
 
+/* Årsetiketter langs en termin-/kvartalsakse */
+function TermYearAxis({ n, ppy }) {
+  const years = Math.max(1, Math.ceil(n / ppy));
+  const stepv = years <= 8 ? 1 : years <= 16 ? 2 : 5;
+  const marks = [];
+  for (let y = 0; y < years; y++) {
+    if (y === 0 || y === years - 1 || ((y + 1) % stepv === 0 && y < years - 2)) marks.push(y);
+  }
+  return (
+    <div style={{ position: "relative", height: 14, marginTop: 4, flex: "none" }}>
+      {marks.map(y => {
+        const start = y * ppy;
+        const end = Math.min(n, (y + 1) * ppy);
+        const mid = (start + end) / 2;
+        const first = y === 0, last = y === years - 1;
+        const pos = first ? { left: 0 }
+          : last ? { right: 0 }
+            : { left: (mid / n * 100) + "%", transform: "translateX(-50%)" };
+        return (
+          <span key={y} style={{
+            position: "absolute", top: 0, fontSize: 10, color: C.text3, whiteSpace: "nowrap", ...pos,
+          }}>{"År " + (y + 1)}</span>
+        );
+      })}
+    </div>
+  );
+}
+
+function ppyChartTitle(ppy) {
+  if (ppy === 12) return "Renter og avdrag per måned";
+  if (ppy === 6) return "Renter og avdrag per termin";
+  if (ppy === 4) return "Renter og avdrag per kvartal";
+  if (ppy === 2) return "Renter og avdrag per halvår";
+  return "Renter og avdrag per år";
+}
+
+function termBarTitle(r, ppy) {
+  const year = Math.ceil(r.m / ppy);
+  const within = ((r.m - 1) % ppy) + 1;
+  let when;
+  if (ppy === 12) when = "År " + year + ", mnd " + within;
+  else if (ppy === 4) when = "År " + year + ", K" + within;
+  else if (ppy === 2) when = "År " + year + ", H" + within;
+  else if (ppy === 1) when = "År " + year;
+  else when = "Termin " + r.m;
+  return when + " · renter " + nok(r.interest) + " · avdrag " + nok(r.principal);
+}
+
 /* ============================================================================
-   Stablet søylediagram — renter og avdrag per år
+   Stablet søylediagram — renter og avdrag (per termin / valgt frekvens)
    ========================================================================== */
-function StackedBars({ plan, normalize }) {
-  const max = Math.max(...plan.years.map(y => y.term), 1);
-  const nYears = plan.years.length;
+function StackedBars({ plan, ppy = 12, normalize }) {
+  /* Én søyle per termin, slik at kvartalsvis/månedlig osv. speiler valget */
+  const data = plan.rows;
+  const max = Math.max(...data.map(r => r.term), 1);
+  const n = data.length;
+  const gap = n > 60 ? 1 : n > 20 ? 2 : 4;
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
@@ -872,7 +1138,7 @@ function StackedBars({ plan, normalize }) {
         )}
         <div style={{
           position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "flex-end",
-          gap: nYears > 20 ? 2 : 4, borderBottom: "1px solid " + C.inputBorder,
+          gap, borderBottom: "1px solid " + C.inputBorder,
         }}>
           {!normalize && (
             <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
@@ -880,14 +1146,14 @@ function StackedBars({ plan, normalize }) {
               <div style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 1, background: C.border }} />
             </div>
           )}
-          {plan.years.map(y => {
-            const h = normalize ? 100 : (y.term / max) * 100;
-            const iShare = y.term > 0 ? y.interest / y.term * 100 : 0;
+          {data.map(r => {
+            const h = normalize ? 100 : (r.term / max) * 100;
+            const iShare = r.term > 0 ? r.interest / r.term * 100 : 0;
             return (
-              <div key={y.year} title={"År " + y.year + " · renter " + nok(y.interest) + " · avdrag " + nok(y.principal)}
+              <div key={r.m} title={termBarTitle(r, ppy)}
                 style={{
                   flex: 1, minWidth: 0, height: h + "%", display: "flex", flexDirection: "column",
-                  justifyContent: "flex-end", borderRadius: 3, overflow: "hidden", position: "relative",
+                  justifyContent: "flex-end", borderRadius: n > 40 ? 1 : 3, overflow: "hidden", position: "relative",
                 }}>
                 <div style={{ height: iShare + "%", background: C.blue2 }} />
                 <div style={{ height: (100 - iShare) + "%", background: C.blue }} />
@@ -896,22 +1162,33 @@ function StackedBars({ plan, normalize }) {
           })}
         </div>
       </div>
-      <div style={{ paddingLeft: normalize ? 0 : 82 }}><YearAxis years={nYears} /></div>
+      <div style={{ paddingLeft: normalize ? 0 : 82 }}>
+        <TermYearAxis n={n} ppy={ppy} />
+      </div>
     </div>
   );
 }
 
 /* ============================================================================
-   Stablet søylediagram — akkumulerte renter og avdrag
+   Stablet søylediagram — akkumulerte renter, avdrag og gebyrer
    ========================================================================== */
-function CumulativeBars({ plan }) {
-  let cInt = 0, cPrin = 0;
-  const data = plan.years.map(y => {
+function CumulativeBars({ plan, s }) {
+  const feePer = s.fee || 0;
+  const setupDeed = (s.setup || 0) + (s.deed || 0);
+  let cInt = 0, cPrin = 0, cFees = 0;
+  const data = plan.years.map((y, i) => {
     cInt += y.interest;
     cPrin += y.principal;
-    return { year: y.year, interest: cInt, principal: cPrin, total: cInt + cPrin };
+    cFees += y.chunk.length * feePer + (i === 0 ? setupDeed : 0);
+    return {
+      year: y.year,
+      interest: cInt,
+      principal: cPrin,
+      fees: cFees,
+      total: cInt + cPrin + cFees,
+    };
   });
-  const max = Math.max(...data.map(d => d.total), 1);
+  const max = Math.max(...data.map(d => d.total), plan.totalPaid || 1);
   const nYears = data.length;
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
@@ -933,14 +1210,22 @@ function CumulativeBars({ plan }) {
           {data.map(d => {
             const h = d.total / max * 100;
             const iShare = d.total > 0 ? d.interest / d.total * 100 : 0;
+            const fShare = d.total > 0 ? d.fees / d.total * 100 : 0;
+            const pShare = Math.max(0, 100 - iShare - fShare);
             return (
-              <div key={d.year} title={"År " + d.year + " · akkumulerte renter " + nok(d.interest) + " · akkumulerte avdrag " + nok(d.principal)}
+              <div key={d.year}
+                title={"År " + d.year
+                  + " · renter " + nok(d.interest)
+                  + " · avdrag " + nok(d.principal)
+                  + " · gebyrer " + nok(d.fees)
+                  + " · totalt " + nok(d.total)}
                 style={{
                   flex: 1, minWidth: 0, height: h + "%", display: "flex", flexDirection: "column",
                   justifyContent: "flex-end", borderRadius: 3, overflow: "hidden", position: "relative",
                 }}>
-                <div style={{ height: iShare + "%", background: C.blue2 }} />
-                <div style={{ height: (100 - iShare) + "%", background: C.blue }} />
+                <div style={{ height: fShare + "%", background: C.sec800, minHeight: fShare > 0 ? 1 : 0 }} />
+                <div style={{ height: iShare + "%", background: C.blue2, minHeight: iShare > 0 ? 1 : 0 }} />
+                <div style={{ height: pShare + "%", background: C.blue, minHeight: pShare > 0 ? 1 : 0 }} />
               </div>
             );
           })}
@@ -990,7 +1275,7 @@ function DebtBars({ plan, s }) {
               }} />
               <div style={{
                 flex: 1, minWidth: 0, height: (d.paid / max * 100) + "%",
-                background: C.violet, borderRadius: "3px 3px 0 0",
+                background: C.text3, borderRadius: "3px 3px 0 0",
               }} />
             </div>
           ))}
@@ -1582,10 +1867,16 @@ function PlanTable({ plan, s, view, showRate }) {
   const startAmount = plan.amount != null ? plan.amount : s.amount;
   const endBal = plan.rows.length ? plan.rows[plan.rows.length - 1].balance : 0;
   const principalSum = Math.max(0, startAmount - endBal);
-  const cols = showRate
-    ? ["År", "Termin", "Rente", "Avdrag", "Renter", "Gebyrer", "Sum betaling", "Restgjeld"]
-    : ["År", "Termin", "Avdrag", "Renter", "Gebyrer", "Sum betaling", "Restgjeld"];
+  const showTop = rows.some(r => r.topBalance != null);
+  const cols = [
+    "År", "Termin",
+    ...(showRate ? ["Rente"] : []),
+    "Avdrag", "Renter", "Gebyrer", "Sum betaling",
+    ...(showTop ? ["Topplån"] : []),
+    "Restgjeld",
+  ];
   const padOf = i => ({ paddingLeft: i === 0 ? 24 : 10, paddingRight: i === cols.length - 1 ? 24 : 10 });
+  const headSpan = 2 + (showRate ? 1 : 0);
   return (
     <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
       <table className="tbl">
@@ -1594,28 +1885,44 @@ function PlanTable({ plan, s, view, showRate }) {
         </thead>
         <tbody>
           {rows.map(r => (
-            <tr key={r.key} style={{ background: r.bg }}>
+            <tr key={r.key} style={{
+              background: r.bg,
+              boxShadow: r.isTop ? "inset 3px 0 0 " + C.blue : undefined,
+            }}>
               <td className="l" style={{ paddingLeft: 24, color: C.text2 }}>{r.year}</td>
-              <td className="l">{r.termin}{r.isGrace && <GracePill />}</td>
+              <td className="l">
+                {r.termin}
+                {r.isTop && <TopPill />}
+                {r.isGrace && <GracePill />}
+              </td>
               {showRate && <td style={{ color: C.blue, fontWeight: 600 }}>{pct(r.rate)}</td>}
               <td>{nok(r.principal)}</td>
               <td>{nok(r.interest)}</td>
               <td style={{ color: C.text2 }}>{nok(r.fees)}</td>
               <td style={{ fontWeight: 600 }}>{nok(r.total)}</td>
+              {showTop && (
+                <td style={{
+                  color: (r.topBalance || 0) > 0.5 ? "#5B9FFF" : C.text3,
+                  fontWeight: (r.topBalance || 0) > 0.5 ? 600 : 500,
+                }}>
+                  {nok(r.topBalance || 0)}
+                </td>
+              )}
               <td style={{ paddingRight: 24 }}>
                 {nok(r.balance)}
-                <BalanceBar value={r.balancePct} />
+                <BalanceBar value={r.balancePct} topPct={r.topPct} mainPct={r.mainPct} />
               </td>
             </tr>
           ))}
         </tbody>
         <tfoot>
           <tr>
-            <td className="l" colSpan={showRate ? 3 : 2} style={{ paddingLeft: 24, color: C.text2 }}>Sum</td>
+            <td className="l" colSpan={headSpan} style={{ paddingLeft: 24, color: C.text2 }}>Sum</td>
             <td>{nok(principalSum)}</td>
             <td>{nok(plan.totalInterest)}</td>
             <td>{nok(plan.totalFees)}</td>
             <td style={{ color: C.blue }}>{nok(plan.totalPaid)}</td>
+            {showTop && <td style={{ color: C.text3 }}>—</td>}
             <td style={{ paddingRight: 24, color: endBal > 0.5 ? C.red : undefined, fontWeight: endBal > 0.5 ? 600 : undefined }}>
               {nok(endBal)}
             </td>
@@ -1643,7 +1950,7 @@ function Footnote({ children }) {
    ========================================================================== */
 const DEFAULT_STATE = {
   amount: 10000000, rate: 5.4, years: 25, fee: 45, setup: 2500, deed: 585,
-  ppy: 12, grace: 0, graceUnit: "mnd", type: "annuitet", view: "year", tab: "calc",
+  ppy: 12, grace: 0, graceUnit: "mnd", type: "annuitet", view: "year", tab: "home",
   stepsOn: false, yearRates: null, age: 35, debtFreeAge: 60, assetValue: 14000000, income: 2000000,
   ltvOn: false, extraAsset: 0,
   graceStepsOn: false, graceYears: null,
@@ -1651,7 +1958,7 @@ const DEFAULT_STATE = {
   niborOn: false, niborMargin: 1,
 };
 
-const TAB_IDS = ["calc", "plan", "graph", "adv", "more", "advplan"];
+const TAB_IDS = ["home", "calc", "plan", "graph", "adv", "more", "advplan"];
 const PPY_OPTS = [1, 2, 4, 6, 12];
 
 /* Norske navn i output, slik at lagrede verdier er lette å lese */
@@ -1685,6 +1992,7 @@ const IO_FIELDS = [
 ];
 
 const TAB_NO = {
+  home: "Forside",
   calc: "Lån", plan: "Nedbetalingsplan", graph: "Grafikk",
   adv: "Lån Avansert", more: "Avansert II", advplan: "Nedbetalingsplan avansert",
 };
@@ -1699,7 +2007,7 @@ const fromJaNei = v => {
 };
 
 function exportValue(key, v) {
-  if (key === "graceUnit") return v === "year" ? "år" : "måneder";
+  if (key === "graceUnit") return v === "year" || v === "år" ? "år" : "måneder";
   if (key === "type") return v === "serie" ? "serielån" : "annuitet";
   if (key === "view") return v === "month" ? "per termin" : "per år";
   if (key === "tab") return TAB_NO[v] || TAB_NO.calc;
@@ -1710,10 +2018,180 @@ function exportValue(key, v) {
   return v;
 }
 
+function serializeExportValue(key, v) {
+  const ev = exportValue(key, v);
+  if (ev == null) return "null";
+  if (Array.isArray(ev)) return JSON.stringify(ev);
+  return String(ev);
+}
+
+function fieldLine(sentence, key, s) {
+  const field = IO_FIELDS.find(f => f.key === key);
+  return sentence + " " + field.no + ": " + serializeExportValue(key, s[key]);
+}
+
+function ppyLabel(ppy) {
+  if (ppy === 12) return "månedlig (12 terminer per år)";
+  if (ppy === 6) return "annenhver måned (6 terminer per år)";
+  if (ppy === 4) return "kvartalsvis (4 terminer per år)";
+  if (ppy === 2) return "halvårlig (2 terminer per år)";
+  if (ppy === 1) return "årlig (1 termin per år)";
+  return ppy + " terminer per år";
+}
+
+function describeRateSteps(s) {
+  if (!s.stepsOn) return null;
+  const list = yearRateList(s);
+  const segs = rateSegments(list);
+  if (segs.length === 1) return "Renten er satt til " + pct(segs[0].rate) + " gjennom hele løpetiden.";
+  return "Renteendringer underveis er aktive. "
+    + segs.map(sg => {
+      const from = sg.start + 1;
+      const to = sg.end + 1;
+      return from === to
+        ? "I år " + from + " er renten " + pct(sg.rate)
+        : "Fra år " + from + " til år " + to + " er renten " + pct(sg.rate);
+    }).join(". ") + ".";
+}
+
+function describeGraceSteps(s) {
+  if (!s.graceStepsOn) return null;
+  const list = graceYearList(s);
+  const onYears = list.map((on, i) => on ? i + 1 : null).filter(Boolean);
+  if (!onYears.length) return "Avdragsfrihet underveis er slått på, men ingen år er markert som avdragsfrie.";
+  const spans = graceSegments(list).filter(sg => sg.on).map(sg =>
+    sg.start === sg.end ? "år " + (sg.start + 1) : "år " + (sg.start + 1) + "–" + (sg.end + 1)
+  );
+  return "Avdragsfrihet underveis er tegnet for " + spans.join(", ") + ".";
+}
+
+/* Pedagogiske setninger som avsluttes med Feltnavn: verdi – kan limes inn i Input */
 function exportState(s) {
-  const data = { "Lånekalkulator": "1.0" };
-  IO_FIELDS.forEach(({ key, no }) => { data[no] = exportValue(key, s[key]); });
-  return JSON.stringify(data, null, 2);
+  const typeName = s.type === "serie" ? "serielån" : "annuitetslån";
+  const graceUnit = s.graceUnit === "year" || s.graceUnit === "år" ? "år" : "måneder";
+  const topRate = s.topRate == null ? s.rate + 2 : s.topRate;
+  const lines = [];
+
+  lines.push("Lånekalkulator – oversikt over alle valg");
+  lines.push("");
+
+  lines.push(fieldLine(
+    "Lånetypen er " + typeName + ".",
+    "type", s));
+  lines.push(fieldLine(
+    "Lånebeløpet er " + nok(s.amount) + ".",
+    "amount", s));
+  lines.push(fieldLine(
+    "Nominell rente er " + pct(s.rate) + ".",
+    "rate", s));
+  lines.push(fieldLine(
+    "Nedbetalingstiden er " + s.years + " år.",
+    "years", s));
+  lines.push(fieldLine(
+    "Betalingen skjer " + ppyLabel(s.ppy) + ".",
+    "ppy", s));
+  lines.push(fieldLine(
+    s.grace > 0
+      ? "Avdragsfri periode i starten er " + s.grace + " " + graceUnit + "."
+      : "Det er ingen avdragsfri periode i Lån-fanen.",
+    "grace", s));
+  lines.push(fieldLine(
+    "Avdragsfri enhet er " + graceUnit + ".",
+    "graceUnit", s));
+  lines.push(fieldLine(
+    "Termingebyr er " + nok(s.fee) + " per termin.",
+    "fee", s));
+  lines.push(fieldLine(
+    "Etableringsgebyr er " + nok(s.setup) + ".",
+    "setup", s));
+  lines.push(fieldLine(
+    "Tinglysningsgebyr er " + nok(s.deed) + ".",
+    "deed", s));
+  lines.push("");
+
+  lines.push(fieldLine(
+    "Kunden er " + s.age + " år.",
+    "age", s));
+  lines.push(fieldLine(
+    "Målet er gjeldfrihet ved " + s.debtFreeAge + " år.",
+    "debtFreeAge", s));
+  lines.push(fieldLine(
+    s.income > 0
+      ? "Brutto årsinntekt er " + nok(s.income) + "."
+      : "Brutto årsinntekt er ikke oppgitt.",
+    "income", s));
+  lines.push("");
+
+  lines.push(fieldLine(
+    "Verdien på pantet/sikkerheten er " + nok(s.assetValue) + ".",
+    "assetValue", s));
+  lines.push(fieldLine(
+    s.extraAsset > 0
+      ? "Tilleggssikkerhet er " + nok(s.extraAsset) + "."
+      : "Det er ikke lagt inn tilleggssikkerhet.",
+    "extraAsset", s));
+  lines.push(fieldLine(
+    s.ltvOn
+      ? "Rentetrapp etter belåningsgrad er aktivert."
+      : "Rentetrapp etter belåningsgrad er ikke aktivert.",
+    "ltvOn", s));
+  lines.push("");
+
+  lines.push(fieldLine(
+    s.niborOn
+      ? "Lånerenten er koblet til Nibor-kurven."
+      : "Nibor-kobling er ikke aktivert.",
+    "niborOn", s));
+  lines.push(fieldLine(
+    "Nibor-påslaget er " + pct(s.niborMargin) + ".",
+    "niborMargin", s));
+  lines.push(fieldLine(
+    s.stepsOn
+      ? (describeRateSteps(s) || "Renteendringer underveis er aktive.")
+      : "Renteendringer underveis er ikke aktivert.",
+    "stepsOn", s));
+  lines.push(fieldLine(
+    s.stepsOn && s.yearRates
+      ? "Rente per år følger den tegnede kurven."
+      : "Det er ikke lagret en egen rentekurve per år.",
+    "yearRates", s));
+  lines.push("");
+
+  lines.push(fieldLine(
+    s.graceStepsOn
+      ? (describeGraceSteps(s) || "Avdragsfrihet underveis er aktivert.")
+      : "Avdragsfrihet underveis er ikke aktivert.",
+    "graceStepsOn", s));
+  lines.push(fieldLine(
+    s.graceStepsOn && s.graceYears
+      ? "Avdragsfri per år følger den tegnede kurven."
+      : "Det er ikke lagret en egen avdragsfri-kurve per år.",
+    "graceYears", s));
+  lines.push("");
+
+  lines.push(fieldLine(
+    s.topAmount > 0
+      ? "Topplånet er " + nok(s.topAmount) + "."
+      : "Det er ikke lagt inn topplån.",
+    "topAmount", s));
+  lines.push(fieldLine(
+    s.topAmount > 0
+      ? "Rente på topplån er " + pct(topRate)
+        + (s.topRate == null ? " (automatisk +2 prosentpoeng)." : " (manuelt satt).")
+      : "Rente på topplån følger automatikk (+2 prosentpoeng) når topplån eventuelt legges inn.",
+    "topRate", s));
+  lines.push("");
+
+  lines.push(fieldLine(
+    "Aktiv fane er «" + (TAB_NO[s.tab] || s.tab) + "».",
+    "tab", s));
+  lines.push(fieldLine(
+    "Nedbetalingsplanen vises " + (s.view === "month" ? "per termin" : "per år") + ".",
+    "view", s));
+  lines.push("");
+  lines.push("Dette er en veiledende oversikt. Lim teksten inn via Input for å gjenopprette alle feltene. Faktiske betingelser avtales med banken.");
+
+  return lines.join("\n");
 }
 
 function numOr(v, fallback) {
@@ -1728,12 +2206,25 @@ function pickField(src, key, no) {
   return undefined;
 }
 
-function importState(text) {
-  const raw = JSON.parse(text);
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("Ugyldig format");
-  }
-  const src = raw.state && typeof raw.state === "object" ? raw.state : raw;
+function parseProseFields(text) {
+  const src = {};
+  const fields = IO_FIELDS.slice().sort((a, b) => b.no.length - a.no.length);
+  fields.forEach(({ no }) => {
+    const esc = no.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(esc + "\\s*:\\s*([^\\n]+)", "i");
+    const m = text.match(re);
+    if (!m) return;
+    let raw = m[1].trim();
+    if (/^null$/i.test(raw)) raw = null;
+    else if (raw.charAt(0) === "[") {
+      try { raw = JSON.parse(raw); } catch (e) { /* behold streng */ }
+    }
+    src[no] = raw;
+  });
+  return src;
+}
+
+function applyImportedFields(src) {
   const next = { ...DEFAULT_STATE };
 
   IO_FIELDS.forEach(({ key, no }) => {
@@ -1742,7 +2233,7 @@ function importState(text) {
 
     if (key === "graceUnit") {
       const t = String(v).toLowerCase();
-      next.graceUnit = t === "year" || t === "år" || t === "aar" ? "year" : "mnd";
+      next.graceUnit = (t === "year" || t === "år" || t === "aar" || t.indexOf("år") >= 0) ? "år" : "mnd";
       return;
     }
     if (key === "type") {
@@ -1756,7 +2247,7 @@ function importState(text) {
       return;
     }
     if (key === "tab") {
-      const t = String(v).trim().toLowerCase();
+      const t = String(v).trim().toLowerCase().replace(/[«»"]/g, "");
       next.tab = TAB_FROM_NO[t] || (TAB_IDS.includes(t) ? t : "calc");
       return;
     }
@@ -1770,11 +2261,24 @@ function importState(text) {
       return;
     }
     if (key === "yearRates") {
-      next.yearRates = Array.isArray(v) ? v : null;
+      if (v == null || v === "" || v === "null") next.yearRates = null;
+      else if (Array.isArray(v)) next.yearRates = v;
+      else if (typeof v === "string") {
+        try { next.yearRates = JSON.parse(v); }
+        catch (e) {
+          next.yearRates = v.split(",").map(x => numOr(x.trim(), NaN)).filter(n => Number.isFinite(n));
+          if (!next.yearRates.length) next.yearRates = null;
+        }
+      } else next.yearRates = null;
       return;
     }
     if (key === "graceYears") {
-      next.graceYears = Array.isArray(v) ? v.map(fromJaNei) : null;
+      if (v == null || v === "" || v === "null") next.graceYears = null;
+      else if (Array.isArray(v)) next.graceYears = v.map(fromJaNei);
+      else if (typeof v === "string") {
+        try { next.graceYears = JSON.parse(v).map(fromJaNei); }
+        catch (e) { next.graceYears = null; }
+      } else next.graceYears = null;
       return;
     }
     next[key] = v;
@@ -1787,7 +2291,7 @@ function importState(text) {
   next.setup = clamp(numOr(next.setup, DEFAULT_STATE.setup), 0, 1000000);
   next.deed = clamp(numOr(next.deed, DEFAULT_STATE.deed), 0, 1000000);
   next.ppy = PPY_OPTS.includes(+next.ppy) ? +next.ppy : DEFAULT_STATE.ppy;
-  next.graceUnit = next.graceUnit === "year" ? "year" : "mnd";
+  next.graceUnit = next.graceUnit === "year" || next.graceUnit === "år" ? "år" : "mnd";
   next.grace = clamp(Math.round(numOr(next.grace, 0)), 0, graceMaxFor(next.graceUnit, next.years));
   next.type = next.type === "serie" ? "serie" : "annuitet";
   next.view = next.view === "month" ? "month" : "year";
@@ -1830,6 +2334,22 @@ function importState(text) {
 
   next.grace = Math.min(next.grace, graceMaxFor(next.graceUnit, next.years));
   return next;
+}
+
+function importState(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) throw new Error("Ugyldig format");
+
+  if (trimmed.charAt(0) === "{") {
+    const raw = JSON.parse(trimmed);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Ugyldig format");
+    const src = raw.state && typeof raw.state === "object" ? raw.state : raw;
+    return applyImportedFields(src);
+  }
+
+  const src = parseProseFields(trimmed);
+  if (!Object.keys(src).length) throw new Error("Ugyldig format");
+  return applyImportedFields(src);
 }
 
 function IoCornerBtn({ label, onClick, side }) {
@@ -1885,7 +2405,7 @@ function IoDialog({ mode, state, onClose, onApply }) {
       onApply(importState(text));
       onClose();
     } catch (e) {
-      setErr("Kunne ikke lese teksten. Lim inn hele output-teksten (JSON).");
+      setErr("Kunne ikke lese teksten. Lim inn en Output-tekst (setninger med Feltnavn: verdi) eller JSON.");
     }
   };
 
@@ -1897,7 +2417,8 @@ function IoDialog({ mode, state, onClose, onApply }) {
         display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
       }}>
       <div onClick={e => e.stopPropagation()} style={{
-        width: "min(560px, 100%)", maxHeight: "min(720px, 90vh)",
+        width: mode === "out" ? "min(640px, 100%)" : "min(560px, 100%)",
+        maxHeight: "min(720px, 90vh)",
         background: "#fff", borderRadius: 12, border: "1px solid " + C.border,
         boxShadow: "0 16px 40px rgba(16,24,40,.18)",
         display: "flex", flexDirection: "column", overflow: "hidden",
@@ -1912,8 +2433,8 @@ function IoDialog({ mode, state, onClose, onApply }) {
             </div>
             <Help style={{ marginTop: 2 }}>
               {mode === "out"
-                ? "Kopier teksten (norske feltnavn) og lagre den. Lim den senere inn via Input for å gjenopprette alle felter."
-                : "Lim inn en tidligere Output-tekst for å fylle alle feltene i dashbordet."}
+                ? "Pedagogiske setninger som avsluttes med Feltnavn: verdi. Kopier og lim inn via Input for å gjenopprette alt."
+                : "Lim inn en Output-tekst (eller eldre JSON) for å fylle alle feltene i dashbordet."}
             </Help>
           </div>
           <button type="button" className="lnk" onClick={onClose} aria-label="Lukk">Lukk</button>
@@ -1921,19 +2442,23 @@ function IoDialog({ mode, state, onClose, onApply }) {
         <div style={{ padding: 16, flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 8 }}>
           <textarea ref={areaRef} value={text} readOnly={mode === "out"}
             onChange={e => { setText(e.target.value); setErr(""); }}
-            spellCheck={false}
+            spellCheck={mode === "out"}
             style={{
               width: "100%", flex: 1, minHeight: 320, resize: "vertical",
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-              fontSize: 12, lineHeight: 1.45, color: C.navy,
-              border: "1px solid " + C.inputBorder, borderRadius: 8, padding: 12,
+              fontFamily: mode === "out"
+                ? "inherit"
+                : "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+              fontSize: mode === "out" ? 13.5 : 12,
+              lineHeight: mode === "out" ? 1.55 : 1.45,
+              color: C.navy,
+              border: "1px solid " + C.inputBorder, borderRadius: 8, padding: 14,
               background: mode === "out" ? C.zebra : "#fff",
             }} />
           {err && <div style={{ fontSize: 12, color: C.red }}>{err}</div>}
         </div>
         <div style={{
           padding: "12px 16px", borderTop: "1px solid " + C.border,
-          display: "flex", justifyContent: "flex-end", gap: 8,
+          display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10,
         }}>
           {mode === "out" ? (
             <button type="button" onClick={copy} style={{
@@ -2248,10 +2773,14 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
             </thead>
             <tbody>
               {fullAdv.years.map(y => (
-                <tr key={y.year}>
+                <tr key={y.year} style={{
+                  background: y.topPay ? C.blueSoft : undefined,
+                  boxShadow: y.topPay ? "inset 3px 0 0 " + C.blue : undefined,
+                }}>
                   <td className="l">
                     År {y.year}
                     <span style={{ color: C.text3, fontWeight: 500 }}> · {s.age + y.year - 1} år</span>
+                    {y.topPay ? <TopPill /> : null}
                     {y.grace ? <GracePill /> : null}
                   </td>
                   <td>{nok(y.term)}</td>
@@ -2473,6 +3002,7 @@ function App() {
   const typeName = s.type === "annuitet" ? "annuitetslån" : "serielån";
 
   const tabs = [
+    { v: "home", label: "Forside" },
     { v: "calc", label: "Lån", tone: "green" },
     { v: "plan", label: "Nedbetalingsplan", tone: "green" },
     { v: "graph", label: "Grafikk" },
@@ -2513,11 +3043,11 @@ function App() {
 
         <Slider id="f-amount" label="Lånebeløp" display={nok(s.amount)} value={s.amount}
           min={100000} max={50000000} step={50000} onChange={v => up("amount", v)}
-          minLabel="100 000 kr" maxLabel="50 000 000 kr" />
+          minLabel="100 000 kr" maxLabel="50 000 000 kr" editable />
 
         <Slider id="f-rate" label="Nominell rente" display={pct(s.rate)} value={s.rate}
           min={1} max={15} step={0.05} onChange={v => up("rate", v)}
-          minLabel="1,00 %" maxLabel="15,00 %" />
+          minLabel="1,00 %" maxLabel="15,00 %" editable editAs="pct" />
 
         <Slider id="f-years" label="Nedbetalingstid" display={s.years + " år"} value={s.years}
           min={YEARS_MIN} max={YEARS_MAX} step={1} onChange={setYears}
@@ -2622,10 +3152,10 @@ function App() {
 
         <Card pad={16} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <CardTitle>Renter og avdrag per år</CardTitle>
+            <CardTitle>{ppyChartTitle(s.ppy)}</CardTitle>
             <Legend items={[{ label: "Renter", color: C.blue2 }, { label: "Avdrag", color: C.blue }]} />
           </div>
-          <StackedBars plan={base} />
+          <StackedBars plan={base} ppy={s.ppy} />
         </Card>
       </div>
     </div>
@@ -2665,8 +3195,10 @@ function App() {
   /* ---------- fane: grafisk ---------- */
   const lastYear = base.years[base.years.length - 1];
   const cumHelp = lastYear
-    ? "Ved utløpet av løpetiden er " + nok(base.totalInterest) + " betalt i renter og "
-      + nok(s.amount) + " i avdrag."
+    ? "Ved utløpet av løpetiden er " + nok(base.totalInterest) + " betalt i renter, "
+      + nok(s.amount) + " i avdrag og " + nok(base.totalFees)
+      + " i gebyrer (etablering, tinglysning og termingebyr). Samlet "
+      + nok(base.totalPaid) + " — samme beløp som totalt å betale."
     : "";
 
   const graphTab = (
@@ -2674,17 +3206,21 @@ function App() {
       <Card pad={16} style={{ flex: 1.35, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <CardTitle>Restgjeld over tid</CardTitle>
-          <Legend items={[{ label: "Restgjeld", color: C.blue }, { label: "Betalt totalt", color: C.violet }]} />
+          <Legend items={[{ label: "Restgjeld", color: C.blue }, { label: "Betalt totalt", color: C.text3 }]} />
         </div>
         <DebtBars plan={base} s={s} />
       </Card>
 
       <Card pad={16} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <CardTitle>Akkumulerte avdrag og renter</CardTitle>
-          <Legend items={[{ label: "Akkumulerte renter", color: C.blue2 }, { label: "Akkumulerte avdrag", color: C.blue }]} />
+          <CardTitle>Akkumulerte avdrag, renter og gebyrer</CardTitle>
+          <Legend items={[
+            { label: "Gebyrer", color: C.sec800 },
+            { label: "Renter", color: C.blue2 },
+            { label: "Avdrag", color: C.blue },
+          ]} />
         </div>
-        <CumulativeBars plan={base} />
+        <CumulativeBars plan={base} s={s} />
         <Help>{cumHelp}</Help>
       </Card>
     </div>
@@ -3150,8 +3686,8 @@ function App() {
       </div>
       <PlanTable plan={fullAdv} s={s} view={s.view} showRate />
       <Footnote>
-        Planen slår sammen grunnlån og eventuelt topplån. Avdrag går til topplånet først
-        (høyere rente), deretter til grunnlånet. Rentekolonnen er veid rente når lånene
+        Planen slår sammen grunnlån og eventuelt topplån. Avdrag går alltid til topplånet først
+        (markert i blått med «Topplån»), deretter til grunnlånet. Rentekolonnen er veid rente når lånene
         har ulik rente. «Avdragsfri» gjelder grunnlånet. Avdragsfrihet på slutten gir restgjeld
         i stedet for gjeldfrihet – løpetiden forlenges ikke.
       </Footnote>
@@ -3169,9 +3705,8 @@ function App() {
 
         {/* topplinje */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 24, flex: "none" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
             <img src={SPWM_LOGO} alt="Söderberg &amp; Partners Wealth Management" style={{ height: 26, display: "block" }} />
-            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: ".08em", color: C.text2, textTransform: "uppercase" }}>Lånekalkulator</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "none" }}>
             <div style={{ display: "flex", gap: 2, background: C.track, borderRadius: 5, padding: 4 }}>
@@ -3185,6 +3720,7 @@ function App() {
         </div>
 
         {/* innhold */}
+        {tab === "home" && <ForsidePanel onStart={() => up("tab", "calc")} />}
         {/* Kalkulatorkortene tar 9/10 av høyden; resten er luft nederst */}
         {tab === "calc" && <React.Fragment>{calcTab}<div style={{ flex: 1, minHeight: 0 }} aria-hidden="true" /></React.Fragment>}
         {tab === "plan" && planTab}
