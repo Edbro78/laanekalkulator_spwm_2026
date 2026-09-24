@@ -144,8 +144,38 @@ const grp = n => {
   return (neg ? "−" : "") + s;
 };
 const nok = v => grp(Number.isFinite(v) ? v : 0) + " kr";
+const nokDash = v => "kr " + grp(Number.isFinite(v) ? v : 0) + ",-";
 const pct = v => (Number.isFinite(v) ? v : 0).toFixed(2).replace(".", ",") + " %";
 const pct1 = v => (Number.isFinite(v) ? v : 0).toFixed(1).replace(".", ",") + " %";
+
+/* Slår sammen like årlige beløp til intervaller (f.eks. 2027–2032) */
+function collapseEqualYears(entries) {
+  const rows = [];
+  for (const e of entries) {
+    const amount = Math.round(e.amount);
+    const last = rows[rows.length - 1];
+    if (last && last.amount === amount) last.endYear = e.year;
+    else rows.push({ startYear: e.year, endYear: e.year, amount });
+  }
+  return rows;
+}
+
+/* Første 10 år fra avansert nedbetalingsplan → kalenderår med sammenslåtte like beløp */
+function buildMalBehovRows(plan, startYear, nYears = 10) {
+  const setupDeed = plan.setupDeed || 0;
+  const years = (plan.years || []).slice(0, nYears);
+  const entries = years.map((y, i) => ({
+    year: startYear + i,
+    amount: y.term + (i === 0 ? setupDeed : 0),
+  }));
+  return collapseEqualYears(entries);
+}
+
+function malBehovYearLabel(row) {
+  return row.startYear === row.endYear
+    ? String(row.startYear)
+    : row.startYear + "–" + row.endYear;
+}
 
 /* ============================================================================
    Beregningsmotor
@@ -546,6 +576,123 @@ function mergePlans(main, top) {
   };
 }
 
+/* ---------- Lån nr 2 (fremtidig lån, Avansert III) ---------- */
+function loan2RemainingYears(s) {
+  const start = clamp(Math.round(s.loan2StartYear || 1), 1, Math.max(1, s.years));
+  return Math.max(1, s.years - (start - 1));
+}
+
+function loan2ResolvedYears(s) {
+  if (s.loan2Years == null || s.loan2Years === "") return loan2RemainingYears(s);
+  return clamp(Math.round(numOr(s.loan2Years, loan2RemainingYears(s))), YEARS_MIN, YEARS_MAX);
+}
+
+function loan2ResolvedRate(s) {
+  return s.loan2Rate == null || s.loan2Rate === ""
+    ? s.rate
+    : clamp(numOr(s.loan2Rate, s.rate), 0, 30);
+}
+
+function buildLoan2Plan(s) {
+  if (!s.loan2On || !(s.loan2Amount > 0)) return null;
+  const years = loan2ResolvedYears(s);
+  const rate = loan2ResolvedRate(s);
+  const loan2S = {
+    ...s,
+    amount: s.loan2Amount,
+    rate,
+    years,
+    grace: clamp(Math.round(s.loan2Grace || 0), 0, graceMaxFor(s.loan2GraceUnit || "mnd", years)),
+    graceUnit: s.loan2GraceUnit === "år" ? "år" : "mnd",
+    stepsOn: false, yearRates: null, graceStepsOn: false, graceYears: null,
+    niborOn: false, ltvOn: false, fee: 0, setup: 0, deed: 0, topAmount: 0,
+  };
+  return buildPlan(loan2S, false);
+}
+
+function emptyTermRow(m, rate) {
+  return {
+    m, interest: 0, principal: 0, term: 0, balance: 0,
+    grace: false, rate: rate || 0, effRate: rate || 0,
+  };
+}
+
+/* Legger lån nr 2 inn i planen fra valgt etableringsår (uavhengig av topplån) */
+function attachLoan2(plan, loan2Plan, s) {
+  if (!loan2Plan) return plan;
+  const startY = clamp(Math.round(s.loan2StartYear || 1), 1, Math.max(1, s.years));
+  const startTerm = (startY - 1) * s.ppy; /* 0-basert */
+  const n1 = plan.rows.length;
+  const n2 = loan2Plan.rows.length;
+  const n = Math.max(n1, startTerm + n2);
+  const lastMainRate = plan.rows.length ? plan.rows[plan.rows.length - 1].effRate : s.rate;
+
+  const rows = [];
+  for (let i = 0; i < n; i++) {
+    const base = i < n1 ? plan.rows[i] : emptyTermRow(i + 1, lastMainRate);
+    const j = i - startTerm;
+    const l2 = (j >= 0 && j < n2) ? loan2Plan.rows[j] : null;
+    const i1 = base.interest || 0, p1 = base.principal || 0, t1 = base.term || 0;
+    const i2 = l2 ? l2.interest : 0, p2 = l2 ? l2.principal : 0, t2 = l2 ? l2.term : 0;
+    const bal1 = base.balance || 0;
+    const bal2 = l2 ? l2.balance : 0;
+    const mb = base.mainBal != null ? base.mainBal : bal1;
+    const tb = base.topBal != null ? base.topBal : null;
+    const debt = bal1 + bal2;
+    const eff = debt > 0.5
+      ? ((base.effRate || 0) * bal1 + (l2 ? l2.effRate : 0) * bal2) / debt
+      : (base.effRate || 0);
+    rows.push({
+      m: i + 1,
+      interest: i1 + i2,
+      principal: p1 + p2,
+      term: t1 + t2,
+      balance: bal1 + bal2,
+      mainBal: mb,
+      topBal: tb,
+      loan2Bal: j < 0 ? null : bal2,
+      grace: !!base.grace,
+      rate: eff,
+      effRate: eff,
+      topPay: !!base.topPay,
+      loan2Pay: p2 > 0.5,
+    });
+  }
+
+  const totInt = rows.reduce((a, r) => a + r.interest, 0);
+  const totPaid = rows.reduce((a, r) => a + r.term, 0) + (plan.setupDeed || 0);
+  const years = [];
+  const ppy = Math.max(1, s.ppy);
+  for (let y = 0; y * ppy < n; y++) {
+    const chunk = rows.slice(y * ppy, (y + 1) * ppy);
+    const last = chunk[chunk.length - 1];
+    years.push({
+      year: y + 1, chunk,
+      interest: chunk.reduce((a, r) => a + r.interest, 0),
+      principal: chunk.reduce((a, r) => a + r.principal, 0),
+      term: chunk.reduce((a, r) => a + r.term, 0),
+      balance: last.balance,
+      mainBal: last.mainBal,
+      topBal: last.topBal,
+      loan2Bal: last.loan2Bal,
+      grace: chunk.some(r => r.grace),
+      rate: chunk.reduce((a, r) => a + r.effRate, 0) / chunk.length,
+      topPay: chunk.some(r => r.topPay),
+      loan2Pay: chunk.some(r => r.loan2Pay),
+    });
+  }
+
+  return {
+    ...plan,
+    rows, n, years,
+    totalInterest: totInt,
+    totalPaid: totPaid,
+    lastTerm: rows[n - 1].term,
+    amount: (plan.amount || 0) + loan2Plan.amount,
+    loan2Amount: loan2Plan.amount,
+  };
+}
+
 /* Tabellrader — samme funksjon for begge visninger */
 function makeTable(plan, s, view) {
   const startAmount = plan.amount != null ? plan.amount : s.amount;
@@ -563,6 +710,7 @@ function makeTable(plan, s, view) {
     return plan.years.map((y, i) => {
       const fees = y.chunk.length * feePer + (i === 0 ? one : 0);
       const isTop = !!y.topPay;
+      const isLoan2 = !!y.loan2Pay;
       return {
         key: "y" + y.year, year: y.year,
         termin: y.chunk.length === 1 ? String(y.chunk[0].m)
@@ -571,8 +719,9 @@ function makeTable(plan, s, view) {
         total: y.term + (i === 0 ? one : 0),
         balance: y.balance, balancePct: pctOf(y.balance),
         topBalance: y.topBal != null ? y.topBal : null,
-        isGrace: y.grace, isTop,
-        bg: isTop ? C.blueSoft : (y.year % 2 === 0 ? C.zebra : "#fff"),
+        loan2Balance: y.loan2Bal != null ? y.loan2Bal : null,
+        isGrace: y.grace, isTop, isLoan2,
+        bg: isTop ? C.blueSoft : isLoan2 ? "#EAF3EE" : (y.year % 2 === 0 ? C.zebra : "#fff"),
         ...splitBal(y),
       };
     });
@@ -580,6 +729,7 @@ function makeTable(plan, s, view) {
   return plan.rows.map((r, i) => {
     const year = Math.ceil(r.m / s.ppy);
     const isTop = !!r.topPay;
+    const isLoan2 = !!r.loan2Pay;
     return {
       key: "m" + r.m, year, termin: String(r.m), rate: r.effRate,
       principal: r.principal, interest: r.interest,
@@ -587,8 +737,9 @@ function makeTable(plan, s, view) {
       total: r.term + (i === 0 ? one : 0),
       balance: r.balance, balancePct: pctOf(r.balance),
       topBalance: r.topBal != null ? r.topBal : null,
-      isGrace: r.grace, isTop,
-      bg: isTop ? C.blueSoft : (year % 2 === 0 ? C.zebra : "#fff"),
+      loan2Balance: r.loan2Bal != null ? r.loan2Bal : null,
+      isGrace: r.grace, isTop, isLoan2,
+      bg: isTop ? C.blueSoft : isLoan2 ? "#EAF3EE" : (year % 2 === 0 ? C.zebra : "#fff"),
       ...splitBal(r),
     };
   });
@@ -1006,6 +1157,15 @@ function TopPill() {
   );
 }
 
+function Loan2Pill() {
+  return (
+    <span style={{
+      marginLeft: 6, fontSize: 10, fontWeight: 600, padding: "1px 7px", borderRadius: 100,
+      background: "#EAF3EE", border: "1px solid " + C.greenMuted, color: C.green, whiteSpace: "nowrap",
+    }}>Lån nr 2</span>
+  );
+}
+
 function BalanceBar({ value, topPct, mainPct }) {
   const split = topPct != null && mainPct != null;
   return (
@@ -1096,35 +1256,274 @@ function TermYearAxis({ n, ppy }) {
   );
 }
 
-function ppyChartTitle(ppy) {
-  if (ppy === 12) return "Renter og avdrag per måned";
-  if (ppy === 6) return "Renter og avdrag per termin";
-  if (ppy === 4) return "Renter og avdrag per kvartal";
-  if (ppy === 2) return "Renter og avdrag per halvår";
-  return "Renter og avdrag per år";
+function yearBarTitle(y) {
+  return "År " + y.year + " · renter " + nok(y.interest) + " · avdrag " + nok(y.principal);
 }
 
-function termBarTitle(r, ppy) {
-  const year = Math.ceil(r.m / ppy);
-  const within = ((r.m - 1) % ppy) + 1;
-  let when;
-  if (ppy === 12) when = "År " + year + ", mnd " + within;
-  else if (ppy === 4) when = "År " + year + ", K" + within;
-  else if (ppy === 2) when = "År " + year + ", H" + within;
-  else if (ppy === 1) when = "År " + year;
-  else when = "Termin " + r.m;
-  return when + " · renter " + nok(r.interest) + " · avdrag " + nok(r.principal);
+const LOAN_STACK = {
+  main: { label: "Lån nr 1", color: C.blue },
+  top: { label: "Topplån", color: "#5B9FFF" },
+  loan2: { label: "Lån nr 2", color: C.green },
+};
+
+/* ============================================================================
+   Stablet restgjeld — lån nr 1, topplån og lån nr 2 per år
+   ========================================================================== */
+function MultiLoanDebtBars({ plan, s, startCal }) {
+  const hasTop = (s.topAmount || 0) > 0;
+  const hasLoan2 = !!(s.loan2On && s.loan2Amount > 0);
+  const data = plan.years.map(y => {
+    const top = hasTop && y.topBal != null ? Math.max(0, y.topBal) : 0;
+    const loan2 = hasLoan2 && y.loan2Bal != null ? Math.max(0, y.loan2Bal) : 0;
+    const main = y.mainBal != null
+      ? Math.max(0, y.mainBal)
+      : Math.max(0, (y.balance || 0) - top - loan2);
+    return {
+      year: y.year,
+      cal: startCal + y.year - 1,
+      main, top, loan2,
+      total: main + top + loan2,
+    };
+  });
+  const max = Math.max(...data.map(d => d.total), s.amount + (s.topAmount || 0) + (hasLoan2 ? s.loan2Amount : 0), 1);
+  const n = data.length;
+  const gap = n > 30 ? 2 : n > 18 ? 3 : 5;
+  const legend = [
+    LOAN_STACK.main,
+    ...(hasTop ? [LOAN_STACK.top] : []),
+    ...(hasLoan2 ? [LOAN_STACK.loan2] : []),
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flex: "none" }}>
+        <CardTitle sub="Restgjeld ved utgangen av hvert år gjennom hele nedbetalingsperioden.">
+          Lån over tid
+        </CardTitle>
+        <Legend items={legend} />
+      </div>
+      <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
+        <div style={{
+          width: 78, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between",
+          fontSize: 10, color: C.text3, textAlign: "right", padding: "0 0 1px",
+        }}>
+          <span>{nok(max)}</span><span>{nok(max / 2)}</span><span>0 kr</span>
+        </div>
+        <div style={{
+          position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "flex-end",
+          gap, borderBottom: "1px solid " + C.inputBorder,
+        }}>
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+            <div style={{ position: "absolute", left: 0, right: 0, top: 0, height: 1, background: C.border }} />
+            <div style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 1, background: C.border }} />
+          </div>
+          {data.map(d => {
+            const h = d.total / max * 100;
+            const parts = [
+              { key: "loan2", v: d.loan2, color: LOAN_STACK.loan2.color, show: hasLoan2 },
+              { key: "top", v: d.top, color: LOAN_STACK.top.color, show: hasTop },
+              { key: "main", v: d.main, color: LOAN_STACK.main.color, show: true },
+            ].filter(p => p.show && p.v > 0.5);
+            const tip = "År " + d.year + " (" + d.cal + ")"
+              + " · lån nr 1 " + nok(d.main)
+              + (hasTop ? " · topplån " + nok(d.top) : "")
+              + (hasLoan2 ? " · lån nr 2 " + nok(d.loan2) : "")
+              + " · samlet " + nok(d.total);
+            return (
+              <div key={d.year} title={tip}
+                style={{
+                  flex: 1, minWidth: 0, height: Math.max(h, d.total > 0.5 ? 2 : 0) + "%",
+                  display: "flex", flexDirection: "column", justifyContent: "flex-end",
+                  borderRadius: n > 28 ? "2px 2px 0 0" : "4px 4px 0 0",
+                  overflow: "hidden", position: "relative",
+                  transition: "height .25s ease",
+                }}>
+                {parts.map((p, i) => (
+                  <div key={p.key} style={{
+                    height: (p.v / d.total * 100) + "%",
+                    background: p.color,
+                    minHeight: p.v > 0.5 ? 2 : 0,
+                    borderTop: i > 0 ? "1px solid rgba(255,255,255,.35)" : "none",
+                  }} />
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ paddingLeft: 86 }}>
+        <div style={{ position: "relative", height: 14, flex: "none" }}>
+          {(() => {
+            const stepv = n <= 8 ? 1 : n <= 16 ? 2 : 5;
+            const marks = [];
+            for (let i = 0; i < n; i++) {
+              if (i === 0 || i === n - 1 || ((i + 1) % stepv === 0 && i < n - 2)) marks.push(i);
+            }
+            return marks.map(i => {
+              const first = i === 0, last = i === n - 1;
+              const pos = first ? { left: 0 }
+                : last ? { right: 0 }
+                  : { left: ((i + 0.5) / n * 100) + "%", transform: "translateX(-50%)" };
+              return (
+                <span key={i} style={{
+                  position: "absolute", top: 0, fontSize: 10, color: C.text3, whiteSpace: "nowrap", ...pos,
+                }}>{startCal + i}</span>
+              );
+            });
+          })()}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ============================================================================
-   Stablet søylediagram — renter og avdrag (per termin / valgt frekvens)
+   Stablet årlig betjening — utbetaling per lån (kontantstrøm)
    ========================================================================== */
-function StackedBars({ plan, ppy = 12, normalize }) {
-  /* Én søyle per termin, slik at kvartalsvis/månedlig osv. speiler valget */
-  const data = plan.rows;
-  const max = Math.max(...data.map(r => r.term), 1);
+function MultiLoanPaymentBars({ mainPlan, topPlan, loan2Plan, s, startCal }) {
+  const hasTop = !!(topPlan && (s.topAmount || 0) > 0);
+  const hasLoan2 = !!(loan2Plan && s.loan2On && s.loan2Amount > 0);
+  const startY = clamp(Math.round(s.loan2StartYear || 1), 1, Math.max(1, s.years));
+  const nMain = mainPlan.years.length;
+  const nLoan2 = hasLoan2 ? loan2Plan.years.length : 0;
+  const n = Math.max(nMain, hasLoan2 ? startY - 1 + nLoan2 : 0);
+  const setupDeed = mainPlan.setupDeed || 0;
+
+  const data = Array.from({ length: n }, (_, i) => {
+    const mainBase = mainPlan.years[i] ? mainPlan.years[i].term : 0;
+    const main = mainBase + (i === 0 ? setupDeed : 0);
+    const top = hasTop && topPlan.years[i] ? topPlan.years[i].term : 0;
+    const l2i = i - (startY - 1);
+    const loan2 = hasLoan2 && l2i >= 0 && l2i < nLoan2 ? loan2Plan.years[l2i].term : 0;
+    return {
+      year: i + 1,
+      cal: startCal + i,
+      main, top, loan2,
+      total: main + top + loan2,
+      loan2Start: hasLoan2 && i === startY - 1,
+    };
+  });
+
+  const max = Math.max(...data.map(d => d.total), 1);
+  const gap = n > 30 ? 2 : n > 18 ? 3 : 5;
+  const legend = [
+    LOAN_STACK.main,
+    ...(hasTop ? [LOAN_STACK.top] : []),
+    ...(hasLoan2 ? [LOAN_STACK.loan2] : []),
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flex: "none" }}>
+        <CardTitle sub="Samlet utbetaling hvert år. Søylen hopper når lån nr 2 etableres.">
+          Årlig betjening
+        </CardTitle>
+        <Legend items={legend} />
+      </div>
+      <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
+        <div style={{
+          width: 78, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between",
+          fontSize: 10, color: C.text3, textAlign: "right", padding: "0 0 1px",
+        }}>
+          <span>{nok(max)}</span><span>{nok(max / 2)}</span><span>0 kr</span>
+        </div>
+        <div style={{
+          position: "relative", flex: 1, minWidth: 0, display: "flex", alignItems: "flex-end",
+          gap, borderBottom: "1px solid " + C.inputBorder,
+        }}>
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+            <div style={{ position: "absolute", left: 0, right: 0, top: 0, height: 1, background: C.border }} />
+            <div style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 1, background: C.border }} />
+          </div>
+          {hasLoan2 && (
+            <div aria-hidden="true" style={{
+              position: "absolute", top: 0, bottom: 0, width: 0, zIndex: 1, pointerEvents: "none",
+              left: ((startY - 0.5) / n * 100) + "%",
+              borderLeft: "1px dashed " + C.greenMuted,
+            }} />
+          )}
+          {data.map(d => {
+            const h = d.total / max * 100;
+            const parts = [
+              { key: "loan2", v: d.loan2, color: LOAN_STACK.loan2.color, show: hasLoan2 },
+              { key: "top", v: d.top, color: LOAN_STACK.top.color, show: hasTop },
+              { key: "main", v: d.main, color: LOAN_STACK.main.color, show: true },
+            ].filter(p => p.show && p.v > 0.5);
+            const tip = "År " + d.year + " (" + d.cal + ")"
+              + (d.loan2Start ? " · lån nr 2 etableres" : "")
+              + " · lån nr 1 " + nok(d.main)
+              + (hasTop ? " · topplån " + nok(d.top) : "")
+              + (hasLoan2 ? " · lån nr 2 " + nok(d.loan2) : "")
+              + " · samlet " + nok(d.total);
+            return (
+              <div key={d.year} title={tip}
+                style={{
+                  flex: 1, minWidth: 0, height: Math.max(h, d.total > 0.5 ? 2 : 0) + "%",
+                  display: "flex", flexDirection: "column", justifyContent: "flex-end",
+                  borderRadius: n > 28 ? "2px 2px 0 0" : "4px 4px 0 0",
+                  overflow: "hidden", position: "relative",
+                  boxShadow: d.loan2Start ? "0 0 0 1.5px " + C.green : undefined,
+                  transition: "height .25s ease",
+                }}>
+                {parts.map((p, i) => (
+                  <div key={p.key} style={{
+                    height: (p.v / d.total * 100) + "%",
+                    background: p.color,
+                    minHeight: p.v > 0.5 ? 2 : 0,
+                    borderTop: i > 0 ? "1px solid rgba(255,255,255,.35)" : "none",
+                  }} />
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div style={{ paddingLeft: 86 }}>
+        <div style={{ position: "relative", height: 14, flex: "none" }}>
+          {(() => {
+            const stepv = n <= 8 ? 1 : n <= 16 ? 2 : 5;
+            const marks = [];
+            for (let i = 0; i < n; i++) {
+              if (i === 0 || i === n - 1 || ((i + 1) % stepv === 0 && i < n - 2) || (hasLoan2 && i === startY - 1)) {
+                marks.push(i);
+              }
+            }
+            return [...new Set(marks)].map(i => {
+              const first = i === 0, last = i === n - 1;
+              const isStart = hasLoan2 && i === startY - 1;
+              const pos = first ? { left: 0 }
+                : last ? { right: 0 }
+                  : { left: ((i + 0.5) / n * 100) + "%", transform: "translateX(-50%)" };
+              return (
+                <span key={i} style={{
+                  position: "absolute", top: 0, fontSize: 10, whiteSpace: "nowrap",
+                  color: isStart ? C.green : C.text3,
+                  fontWeight: isStart ? 600 : 400,
+                  ...pos,
+                }}>{startCal + i}</span>
+              );
+            });
+          })()}
+        </div>
+      </div>
+      {hasLoan2 && (
+        <Help style={{ flex: "none", marginTop: -2 }}>
+          Stiplet linje og markert søyle: lån nr 2 etableres i {startCal + startY - 1}.
+        </Help>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
+   Stablet søylediagram — renter og avdrag per år (følger nedbetalingstid)
+   ========================================================================== */
+function StackedBars({ plan, normalize }) {
+  /* Én søyle per år — antall søyler = nedbetalingstid */
+  const data = plan.years;
+  const max = Math.max(...data.map(y => y.term), 1);
   const n = data.length;
-  const gap = n > 60 ? 1 : n > 20 ? 2 : 4;
+  const gap = n > 30 ? 2 : n > 15 ? 3 : 4;
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <div style={{ display: "flex", gap: 8, flex: 1, minHeight: 0 }}>
@@ -1146,14 +1545,14 @@ function StackedBars({ plan, ppy = 12, normalize }) {
               <div style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 1, background: C.border }} />
             </div>
           )}
-          {data.map(r => {
-            const h = normalize ? 100 : (r.term / max) * 100;
-            const iShare = r.term > 0 ? r.interest / r.term * 100 : 0;
+          {data.map(y => {
+            const h = normalize ? 100 : (y.term / max) * 100;
+            const iShare = y.term > 0 ? y.interest / y.term * 100 : 0;
             return (
-              <div key={r.m} title={termBarTitle(r, ppy)}
+              <div key={y.year} title={yearBarTitle(y)}
                 style={{
                   flex: 1, minWidth: 0, height: h + "%", display: "flex", flexDirection: "column",
-                  justifyContent: "flex-end", borderRadius: n > 40 ? 1 : 3, overflow: "hidden", position: "relative",
+                  justifyContent: "flex-end", borderRadius: n > 30 ? 2 : 3, overflow: "hidden", position: "relative",
                 }}>
                 <div style={{ height: iShare + "%", background: C.blue2 }} />
                 <div style={{ height: (100 - iShare) + "%", background: C.blue }} />
@@ -1163,7 +1562,7 @@ function StackedBars({ plan, ppy = 12, normalize }) {
         </div>
       </div>
       <div style={{ paddingLeft: normalize ? 0 : 82 }}>
-        <TermYearAxis n={n} ppy={ppy} />
+        <TermYearAxis n={n} ppy={1} />
       </div>
     </div>
   );
@@ -1868,11 +2267,13 @@ function PlanTable({ plan, s, view, showRate }) {
   const endBal = plan.rows.length ? plan.rows[plan.rows.length - 1].balance : 0;
   const principalSum = Math.max(0, startAmount - endBal);
   const showTop = rows.some(r => r.topBalance != null);
+  const showLoan2 = rows.some(r => r.loan2Balance != null);
   const cols = [
     "År", "Termin",
     ...(showRate ? ["Rente"] : []),
     "Avdrag", "Renter", "Gebyrer", "Sum betaling",
     ...(showTop ? ["Topplån"] : []),
+    ...(showLoan2 ? ["Lån nr 2"] : []),
     "Restgjeld",
   ];
   const padOf = i => ({ paddingLeft: i === 0 ? 24 : 10, paddingRight: i === cols.length - 1 ? 24 : 10 });
@@ -1887,12 +2288,14 @@ function PlanTable({ plan, s, view, showRate }) {
           {rows.map(r => (
             <tr key={r.key} style={{
               background: r.bg,
-              boxShadow: r.isTop ? "inset 3px 0 0 " + C.blue : undefined,
+              boxShadow: r.isTop ? "inset 3px 0 0 " + C.blue
+                : r.isLoan2 ? "inset 3px 0 0 " + C.green : undefined,
             }}>
               <td className="l" style={{ paddingLeft: 24, color: C.text2 }}>{r.year}</td>
               <td className="l">
                 {r.termin}
                 {r.isTop && <TopPill />}
+                {r.isLoan2 && <Loan2Pill />}
                 {r.isGrace && <GracePill />}
               </td>
               {showRate && <td style={{ color: C.blue, fontWeight: 600 }}>{pct(r.rate)}</td>}
@@ -1906,6 +2309,14 @@ function PlanTable({ plan, s, view, showRate }) {
                   fontWeight: (r.topBalance || 0) > 0.5 ? 600 : 500,
                 }}>
                   {nok(r.topBalance || 0)}
+                </td>
+              )}
+              {showLoan2 && (
+                <td style={{
+                  color: (r.loan2Balance || 0) > 0.5 ? C.green : C.text3,
+                  fontWeight: (r.loan2Balance || 0) > 0.5 ? 600 : 500,
+                }}>
+                  {r.loan2Balance == null ? "—" : nok(r.loan2Balance)}
                 </td>
               )}
               <td style={{ paddingRight: 24 }}>
@@ -1923,6 +2334,7 @@ function PlanTable({ plan, s, view, showRate }) {
             <td>{nok(plan.totalFees)}</td>
             <td style={{ color: C.blue }}>{nok(plan.totalPaid)}</td>
             {showTop && <td style={{ color: C.text3 }}>—</td>}
+            {showLoan2 && <td style={{ color: C.text3 }}>—</td>}
             <td style={{ paddingRight: 24, color: endBal > 0.5 ? C.red : undefined, fontWeight: endBal > 0.5 ? 600 : undefined }}>
               {nok(endBal)}
             </td>
@@ -1956,9 +2368,12 @@ const DEFAULT_STATE = {
   graceStepsOn: false, graceYears: null,
   topAmount: 0, topRate: null,
   niborOn: false, niborMargin: 1,
+  loan2On: false, loan2Amount: 2000000, loan2Rate: null,
+  loan2Years: null, loan2StartYear: 6,
+  loan2Grace: 0, loan2GraceUnit: "mnd",
 };
 
-const TAB_IDS = ["home", "calc", "plan", "graph", "adv", "more", "advplan"];
+const TAB_IDS = ["home", "calc", "plan", "graph", "adv", "more", "adv3", "advplan"];
 const PPY_OPTS = [1, 2, 4, 6, 12];
 
 /* Norske navn i output, slik at lagrede verdier er lette å lese */
@@ -1989,14 +2404,25 @@ const IO_FIELDS = [
   { key: "graceYears", no: "Avdragsfri per år" },
   { key: "topAmount", no: "Topplån" },
   { key: "topRate", no: "Rente på topplån" },
+  { key: "loan2On", no: "Lån nr 2 aktivt" },
+  { key: "loan2Amount", no: "Lån nr 2 beløp" },
+  { key: "loan2Rate", no: "Lån nr 2 rente" },
+  { key: "loan2Years", no: "Lån nr 2 nedbetalingstid" },
+  { key: "loan2StartYear", no: "Lån nr 2 etableringsår" },
+  { key: "loan2Grace", no: "Lån nr 2 avdragsfri periode" },
+  { key: "loan2GraceUnit", no: "Lån nr 2 avdragsfri enhet" },
 ];
 
 const TAB_NO = {
   home: "Forside",
   calc: "Lån", plan: "Nedbetalingsplan", graph: "Grafikk",
-  adv: "Lån Avansert", more: "Avansert II", advplan: "Nedbetalingsplan avansert",
+  adv: "Avansert - rente", more: "Avansert - nøkkeltall og topplån", adv3: "Avansert - lån nr 2",
+  advplan: "Nedbetalingsplan avansert",
 };
 const TAB_FROM_NO = Object.fromEntries(Object.entries(TAB_NO).map(([k, v]) => [v.toLowerCase(), k]));
+TAB_FROM_NO["lån avansert"] = "adv";
+TAB_FROM_NO["avansert ii"] = "more";
+TAB_FROM_NO["avansert iii"] = "adv3";
 
 const jaNei = v => v ? "ja" : "nei";
 const fromJaNei = v => {
@@ -2011,8 +2437,11 @@ function exportValue(key, v) {
   if (key === "type") return v === "serie" ? "serielån" : "annuitet";
   if (key === "view") return v === "month" ? "per termin" : "per år";
   if (key === "tab") return TAB_NO[v] || TAB_NO.calc;
-  if (key === "stepsOn" || key === "graceStepsOn" || key === "ltvOn" || key === "niborOn") return jaNei(v);
+  if (key === "stepsOn" || key === "graceStepsOn" || key === "ltvOn" || key === "niborOn" || key === "loan2On") return jaNei(v);
   if (key === "topRate") return v == null ? "automatisk (+2 %)" : v;
+  if (key === "loan2Rate") return v == null ? "samme som lån nr 1" : v;
+  if (key === "loan2Years") return v == null ? "automatisk (gjenstående)" : v;
+  if (key === "loan2GraceUnit") return v === "year" || v === "år" ? "år" : "måneder";
   if (key === "yearRates") return Array.isArray(v) ? v : null;
   if (key === "graceYears") return Array.isArray(v) ? v.map(jaNei) : null;
   return v;
@@ -2182,6 +2611,43 @@ function exportState(s) {
     "topRate", s));
   lines.push("");
 
+  const l2Start = clamp(s.loan2StartYear || 1, 1, s.years);
+  const l2Cal = new Date().getFullYear() + l2Start - 1;
+  const l2Years = loan2ResolvedYears(s);
+  const l2Rate = loan2ResolvedRate(s);
+  lines.push(fieldLine(
+    s.loan2On
+      ? "Lån nr 2 er aktivt."
+      : "Lån nr 2 er ikke aktivert.",
+    "loan2On", s));
+  lines.push(fieldLine(
+    "Lån nr 2 beløp er " + nok(s.loan2Amount || 0) + ".",
+    "loan2Amount", s));
+  lines.push(fieldLine(
+    s.loan2On
+      ? "Lån nr 2 etableres i " + l2Cal + " (år " + l2Start + " i planen)."
+      : "Lån nr 2 etableringsår er satt til år " + l2Start + " i planen.",
+    "loan2StartYear", s));
+  lines.push(fieldLine(
+    s.loan2Years == null
+      ? "Lån nr 2 nedbetalingstid følger gjenstående på lån nr 1 (" + l2Years + " år)."
+      : "Lån nr 2 nedbetalingstid er " + l2Years + " år.",
+    "loan2Years", s));
+  lines.push(fieldLine(
+    s.loan2Rate == null
+      ? "Lån nr 2 rente er samme som lån nr 1 (" + pct(l2Rate) + ")."
+      : "Lån nr 2 rente er " + pct(l2Rate) + ".",
+    "loan2Rate", s));
+  lines.push(fieldLine(
+    "Lån nr 2 avdragsfri periode er " + (s.loan2Grace || 0) + " "
+      + (s.loan2GraceUnit === "år" ? "år" : "måneder") + ".",
+    "loan2Grace", s));
+  lines.push(fieldLine(
+    "Lån nr 2 avdragsfri enhet er "
+      + (s.loan2GraceUnit === "år" ? "år" : "måneder") + ".",
+    "loan2GraceUnit", s));
+  lines.push("");
+
   lines.push(fieldLine(
     "Aktiv fane er «" + (TAB_NO[s.tab] || s.tab) + "».",
     "tab", s));
@@ -2251,13 +2717,29 @@ function applyImportedFields(src) {
       next.tab = TAB_FROM_NO[t] || (TAB_IDS.includes(t) ? t : "calc");
       return;
     }
-    if (key === "stepsOn" || key === "graceStepsOn" || key === "ltvOn" || key === "niborOn") {
+    if (key === "stepsOn" || key === "graceStepsOn" || key === "ltvOn" || key === "niborOn" || key === "loan2On") {
       next[key] = fromJaNei(v);
       return;
     }
     if (key === "topRate") {
       if (v == null || v === "" || String(v).toLowerCase().indexOf("automatisk") >= 0) next.topRate = null;
       else next.topRate = numOr(v, null);
+      return;
+    }
+    if (key === "loan2Rate") {
+      if (v == null || v === "" || String(v).toLowerCase().indexOf("samme") >= 0) next.loan2Rate = null;
+      else next.loan2Rate = numOr(v, null);
+      return;
+    }
+    if (key === "loan2Years") {
+      if (v == null || v === "" || String(v).toLowerCase().indexOf("automatisk") >= 0
+        || String(v).toLowerCase().indexOf("gjenstående") >= 0) next.loan2Years = null;
+      else next.loan2Years = numOr(v, null);
+      return;
+    }
+    if (key === "loan2GraceUnit") {
+      const t = String(v).toLowerCase();
+      next.loan2GraceUnit = (t === "year" || t === "år" || t === "aar" || t.indexOf("år") >= 0) ? "år" : "mnd";
       return;
     }
     if (key === "yearRates") {
@@ -2310,6 +2792,17 @@ function applyImportedFields(src) {
   if (next.topRate == null || next.topRate === "") next.topRate = null;
   else next.topRate = clamp(numOr(next.topRate, next.rate + 2), 0, 15);
 
+  next.loan2On = !!next.loan2On;
+  next.loan2Amount = clamp(numOr(next.loan2Amount, DEFAULT_STATE.loan2Amount), 0, 50000000);
+  next.loan2StartYear = clamp(Math.round(numOr(next.loan2StartYear, Math.min(6, next.years))), 1, next.years);
+  if (next.loan2Rate == null || next.loan2Rate === "") next.loan2Rate = null;
+  else next.loan2Rate = clamp(numOr(next.loan2Rate, next.rate), 0, 30);
+  if (next.loan2Years == null || next.loan2Years === "") next.loan2Years = null;
+  else next.loan2Years = clamp(Math.round(numOr(next.loan2Years, loan2RemainingYears(next))), YEARS_MIN, YEARS_MAX);
+  next.loan2GraceUnit = next.loan2GraceUnit === "year" || next.loan2GraceUnit === "år" ? "år" : "mnd";
+  const l2y = next.loan2Years != null ? next.loan2Years : loan2RemainingYears(next);
+  next.loan2Grace = clamp(Math.round(numOr(next.loan2Grace, 0)), 0, graceMaxFor(next.loan2GraceUnit, l2y));
+
   if (Array.isArray(next.yearRates) && next.yearRates.length) {
     next.yearRates = next.yearRates.map(r => clamp(numOr(r, next.rate), 0, 30));
     while (next.yearRates.length < next.years) next.yearRates.push(next.yearRates[next.yearRates.length - 1]);
@@ -2352,21 +2845,110 @@ function importState(text) {
   return applyImportedFields(src);
 }
 
-function IoCornerBtn({ label, onClick, side }) {
-  const [hover, setHover] = useState(false);
+function MalBehovDialog({ rows, onClose }) {
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const plainText = rows.map(r => malBehovYearLabel(r) + ":  " + nokDash(r.amount)).join("\n");
+
+  const copy = () => {
+    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(plainText).then(done).catch(() => {
+        const ta = document.createElement("textarea");
+        ta.value = plainText; document.body.appendChild(ta); ta.select();
+        document.execCommand("copy"); document.body.removeChild(ta); done();
+      });
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = plainText; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta); done();
+    }
+  };
+
   return (
-    <button type="button" onClick={onClick} aria-label={label}
+    <div role="dialog" aria-modal="true" aria-label="Output til mål og behov"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 100, background: "rgba(16,24,40,.45)",
+        display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+      }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: "min(420px, 100%)", background: "#fff", borderRadius: 12,
+        border: "1px solid " + C.border, boxShadow: "0 16px 40px rgba(16,24,40,.18)",
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      }}>
+        <div style={{
+          padding: "14px 18px 10px", display: "flex", alignItems: "flex-start",
+          justifyContent: "space-between", gap: 12, borderBottom: "1px solid " + C.border,
+        }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 600, color: C.navy }}>
+              Output til mål og behov
+            </div>
+            <Help style={{ marginTop: 2 }}>
+              Årlige utbetalinger de første 10 årene (avansert plan). Like år er slått sammen.
+            </Help>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "none" }}>
+            <button type="button" onClick={copy} disabled={!rows.length} style={{
+              padding: "7px 12px", borderRadius: 6, border: "none",
+              cursor: rows.length ? "pointer" : "default",
+              background: C.blue, color: "#fff", fontWeight: 600, fontSize: 12.5, fontFamily: "inherit",
+              opacity: rows.length ? 1 : 0.5,
+            }}>{copied ? "Kopiert" : "Kopier"}</button>
+            <button type="button" className="lnk" onClick={onClose} aria-label="Lukk">Lukk</button>
+          </div>
+        </div>
+        <div style={{ padding: "8px 0 12px" }}>
+          {rows.length === 0 ? (
+            <div style={{ padding: "16px 18px", fontSize: 13, color: C.text2 }}>Ingen år i planen.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontVariantNumeric: "tabular-nums" }}>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.startYear + "-" + r.endYear}>
+                    <td style={{
+                      padding: "9px 18px", fontSize: 14, fontWeight: 500, color: C.navy,
+                      borderBottom: "1px solid " + C.border, whiteSpace: "nowrap",
+                    }}>{malBehovYearLabel(r)}</td>
+                    <td style={{
+                      padding: "9px 18px", fontSize: 14, fontWeight: 600, color: C.navy,
+                      borderBottom: "1px solid " + C.border, textAlign: "right", whiteSpace: "nowrap",
+                    }}>{nokDash(r.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IoCornerBtn({ label, onClick, side, disabled }) {
+  const [hover, setHover] = useState(false);
+  const placed = !!side;
+  return (
+    <button type="button" onClick={onClick} aria-label={label} disabled={disabled}
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{
-        position: "absolute", bottom: 10, [side]: 16, zIndex: 20,
-        padding: "6px 12px", borderRadius: 6, cursor: "pointer",
+        ...(placed ? { position: "absolute", bottom: 10, [side]: 16, zIndex: 20 } : { flex: "none" }),
+        padding: "6px 12px", borderRadius: 6, cursor: disabled ? "default" : "pointer",
         fontFamily: "inherit", fontSize: 12, fontWeight: 600, letterSpacing: ".04em",
         textTransform: "uppercase",
-        border: "1px solid " + (hover ? C.blue : C.border),
-        background: hover ? C.blueSoft : "#fff",
-        color: hover ? C.blue : C.text2,
+        border: "1px solid " + (hover && !disabled ? C.blue : C.border),
+        background: hover && !disabled ? C.blueSoft : "#fff",
+        color: hover && !disabled ? C.blue : C.text2,
         boxShadow: "0 1px 2px rgba(16,24,40,.06)",
         transition: "background .15s, border-color .15s, color .15s",
+        whiteSpace: "nowrap",
       }}>{label}</button>
   );
 }
@@ -2656,7 +3238,7 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
     { label: "Din alder", value: s.age + " år" },
     { label: "Gjeldfri ved alder", value: s.debtFreeAge + " år" },
     { label: "Brutto lønn per år", value: s.income > 0 ? nok(s.income) : "Ikke oppgitt",
-      note: s.income > 0 ? nok(s.income / 12) + " per måned" : "Legg inn lønn under Avansert II for betjeningstall." },
+      note: s.income > 0 ? nok(s.income / 12) + " per måned" : "Legg inn lønn under Avansert - nøkkeltall og topplån for betjeningstall." },
   ];
   if (s.income > 0) {
     serviceRows.push(
@@ -2684,7 +3266,7 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
       value: s.niborOn ? "Nibor + " + pct(s.niborMargin) : s.stepsOn ? "Trinnvis rente" : pct(s.rate),
       note: s.niborOn
         ? "Følger rentekurven år 1–10; deretter 10-års nivå + påslag."
-        : s.stepsOn ? "Satt i kurven under Lån Avansert." : "Flat rente gjennom løpetiden." },
+        : s.stepsOn ? "Satt i kurven under Avansert - rente." : "Flat rente gjennom løpetiden." },
     { label: "Nedbetalingstid", value: s.years + " år", note: s.ppy + " terminer per år" },
     { label: "Avdragsfrihet",
       value: s.graceStepsOn ? "Tegnet underveis"
@@ -2774,13 +3356,15 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
             <tbody>
               {fullAdv.years.map(y => (
                 <tr key={y.year} style={{
-                  background: y.topPay ? C.blueSoft : undefined,
-                  boxShadow: y.topPay ? "inset 3px 0 0 " + C.blue : undefined,
+                  background: y.topPay ? C.blueSoft : y.loan2Pay ? "#EAF3EE" : undefined,
+                  boxShadow: y.topPay ? "inset 3px 0 0 " + C.blue
+                    : y.loan2Pay ? "inset 3px 0 0 " + C.green : undefined,
                 }}>
                   <td className="l">
                     År {y.year}
                     <span style={{ color: C.text3, fontWeight: 500 }}> · {s.age + y.year - 1} år</span>
                     {y.topPay ? <TopPill /> : null}
+                    {y.loan2Pay ? <Loan2Pill /> : null}
                     {y.grace ? <GracePill /> : null}
                   </td>
                   <td>{nok(y.term)}</td>
@@ -2957,6 +3541,7 @@ function App() {
   const [s, setS] = useState(() => ({ ...DEFAULT_STATE }));
   const [ioMode, setIoMode] = useState(null); /* "in" | "out" | null */
   const [summaryKind, setSummaryKind] = useState(null); /* null | "loan" | "adv" */
+  const [malBehovOpen, setMalBehovOpen] = useState(false);
   const [niborCurve, setNiborCurve] = useState(() => NIBOR_FALLBACK.map(p => ({ ...p })));
   const up = (k, v) => setS(p => ({ ...p, [k]: v }));
 
@@ -2977,14 +3562,29 @@ function App() {
 
   /* Avdragsfriheten kan ikke overleve et bytte av enhet eller kortere løpetid */
   const setGraceUnit = u => setS(p => ({ ...p, graceUnit: u, grace: Math.min(p.grace, graceMaxFor(u, p.years)) }));
-  const setYears = y => setS(p => ({
-    ...p, years: y, debtFreeAge: p.age + y, grace: Math.min(p.grace, graceMaxFor(p.graceUnit, y)),
-  }));
+  const setYears = y => setS(p => {
+    const years = y;
+    const start = clamp(p.loan2StartYear || 1, 1, years);
+    const rem = Math.max(1, years - (start - 1));
+    return {
+      ...p, years, debtFreeAge: p.age + years,
+      grace: Math.min(p.grace, graceMaxFor(p.graceUnit, years)),
+      loan2StartYear: start,
+      loan2Years: p.loan2On ? rem : p.loan2Years,
+      loan2Grace: Math.min(p.loan2Grace || 0, graceMaxFor(p.loan2GraceUnit || "mnd", p.loan2Years != null ? p.loan2Years : rem)),
+    };
+  });
   /* Målet for gjeldfrihet styrer løpetiden: 35 år nå og gjeldfri ved 39 gir 4 år nedbetaling */
   const setDebtFreeAge = d => setS(p => {
     const years = clamp(d - p.age, YEARS_MIN, YEARS_MAX);
+    const start = clamp(p.loan2StartYear || 1, 1, years);
+    const rem = Math.max(1, years - (start - 1));
     return {
-      ...p, years, debtFreeAge: p.age + years, grace: Math.min(p.grace, graceMaxFor(p.graceUnit, years)),
+      ...p, years, debtFreeAge: p.age + years,
+      grace: Math.min(p.grace, graceMaxFor(p.graceUnit, years)),
+      loan2StartYear: start,
+      loan2Years: p.loan2On ? rem : p.loan2Years,
+      loan2Grace: Math.min(p.loan2Grace || 0, graceMaxFor(p.loan2GraceUnit || "mnd", p.loan2Years != null ? p.loan2Years : rem)),
     };
   });
   /* Ny alder flytter målet og beholder løpetiden – ellers ville målet kunne havne i fortiden */
@@ -2995,6 +3595,8 @@ function App() {
   const pair = buildLoanPair(s, topRate, true);
   const adv = pair.main;
   const topPlan = pair.top;
+  const loan2Plan = buildLoan2Plan(s);
+  const fullAdv = attachLoan2(mergePlans(adv, topPlan), loan2Plan, s);
   const tab = s.tab;
 
   const n = base.n, g = base.g;
@@ -3006,8 +3608,9 @@ function App() {
     { v: "calc", label: "Lån", tone: "green" },
     { v: "plan", label: "Nedbetalingsplan", tone: "green" },
     { v: "graph", label: "Grafikk" },
-    { v: "adv", label: "Lån Avansert", tone: "blue" },
-    { v: "more", label: "Avansert II", tone: "blue" },
+    { v: "adv", label: "Avansert - rente", tone: "blue" },
+    { v: "more", label: "Avansert - nøkkeltall og topplån", tone: "blue" },
+    { v: "adv3", label: "Avansert - lån nr 2", tone: "blue" },
     { v: "advplan", label: "Nedbetalingsplan avansert" },
   ];
 
@@ -3152,10 +3755,10 @@ function App() {
 
         <Card pad={16} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <CardTitle>{ppyChartTitle(s.ppy)}</CardTitle>
+            <CardTitle>Renter og avdrag per år</CardTitle>
             <Legend items={[{ label: "Renter", color: C.blue2 }, { label: "Avdrag", color: C.blue }]} />
           </div>
-          <StackedBars plan={base} ppy={s.ppy} />
+          <StackedBars plan={base} />
         </Card>
       </div>
     </div>
@@ -3376,6 +3979,159 @@ function App() {
     </div>
   );
 
+  /* ---------- fane: Avansert III ---------- */
+  const calYear0 = new Date().getFullYear();
+  const loan2Start = clamp(s.loan2StartYear || 1, 1, s.years);
+  const loan2Rem = Math.max(1, s.years - (loan2Start - 1));
+  const loan2YearsVal = s.loan2Years != null ? s.loan2Years : loan2Rem;
+  const loan2RateVal = s.loan2Rate != null ? s.loan2Rate : s.rate;
+  const loan2GraceUnit = s.loan2GraceUnit === "år" ? "år" : "mnd";
+  const loan2GraceMax = graceMaxFor(loan2GraceUnit, loan2YearsVal);
+  const loan2CalYear = calYear0 + loan2Start - 1;
+
+  const setLoan2StartYear = planYear => setS(p => {
+    const start = clamp(planYear, 1, p.years);
+    const rem = Math.max(1, p.years - (start - 1));
+    return {
+      ...p,
+      loan2StartYear: start,
+      loan2Years: rem,
+      loan2Grace: Math.min(p.loan2Grace || 0, graceMaxFor(p.loan2GraceUnit || "mnd", rem)),
+    };
+  });
+
+  const setLoan2On = on => setS(p => {
+    if (!on) return { ...p, loan2On: false };
+    const start = clamp(p.loan2StartYear || Math.min(6, p.years), 1, p.years);
+    const rem = Math.max(1, p.years - (start - 1));
+    return {
+      ...p,
+      loan2On: true,
+      loan2StartYear: start,
+      loan2Years: rem,
+      loan2Amount: p.loan2Amount > 0 ? p.loan2Amount : 2000000,
+      loan2Grace: Math.min(p.loan2Grace || 0, graceMaxFor(p.loan2GraceUnit || "mnd", rem)),
+    };
+  });
+
+  const adv3Tab = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0 }}>
+      <div style={{
+        display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)",
+        gridTemplateRows: "minmax(0,1fr) minmax(0,1fr)", gap: 12, flex: 1, minHeight: 0,
+      }}>
+        <Card pad={16} style={{
+          gridColumn: 1, gridRow: 1,
+          display: "flex", flexDirection: "column", gap: 10, minHeight: 0, overflowY: "auto",
+        }}>
+          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+            <CardTitle sub="Et separat lån nr 2 som etableres senere i løpetiden. Ikke topplån – nedbetales parallelt med lån nr 1.">
+              Nytt fremtidig lån
+            </CardTitle>
+            <Switch on={!!s.loan2On} onChange={setLoan2On} label="Nytt fremtidig lån" />
+          </div>
+
+          {s.loan2On ? (
+            <React.Fragment>
+              <Slider id="f-loan2-amount" label="Lånebeløp" display={nok(s.loan2Amount)}
+                value={s.loan2Amount} min={0} max={20000000} step={50000}
+                onChange={v => up("loan2Amount", v)} editable editAs="int"
+                minLabel="0 kr" maxLabel="20 000 000 kr" />
+
+              <Slider id="f-loan2-start" label="Etableres"
+                display={String(loan2CalYear) + " (år " + loan2Start + " i planen)"}
+                value={loan2CalYear} min={calYear0} max={calYear0 + s.years - 1} step={1}
+                onChange={v => setLoan2StartYear(v - calYear0 + 1)}
+                minLabel={String(calYear0)} maxLabel={String(calYear0 + s.years - 1)} />
+
+              <Slider id="f-loan2-years" label="Nedbetalingstid" display={loan2YearsVal + " år"}
+                value={loan2YearsVal} min={YEARS_MIN} max={YEARS_MAX} step={1}
+                onChange={v => setS(p => ({
+                  ...p,
+                  loan2Years: v,
+                  loan2Grace: Math.min(p.loan2Grace || 0, graceMaxFor(p.loan2GraceUnit || "mnd", v)),
+                }))}
+                minLabel={YEARS_MIN + " år"} maxLabel={YEARS_MAX + " år"} />
+              <Help>
+                Standard er gjenstående løpetid på lån nr 1 ved etablering ({loan2Rem} år).
+                Du kan velge lengre eller kortere.
+              </Help>
+
+              <Slider id="f-loan2-rate" label="Nominell rente" display={pct(loan2RateVal)}
+                value={loan2RateVal} min={0} max={15} step={0.05}
+                onChange={v => up("loan2Rate", v)} editable editAs="pct"
+                minLabel="0,00 %" maxLabel="15,00 %" />
+              {s.loan2Rate != null && (
+                <button type="button" className="lnk" onClick={() => up("loan2Rate", null)}
+                  style={{ alignSelf: "flex-start" }}>
+                  <Icon name="reset" size={15} />Samme som lån nr 1 ({pct(s.rate)})
+                </button>
+              )}
+
+              <div>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+                  <FieldLabel htmlFor="f-loan2-grace">Avdragsfri periode</FieldLabel>
+                  <span style={{ fontSize: 18, fontWeight: 600, color: C.navy, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+                    {s.loan2Grace || 0} {loan2GraceUnit}
+                  </span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 96px", gap: 10, alignItems: "center" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <input id="f-loan2-grace" className="rng" type="range" min={0} step={1}
+                      value={Math.min(s.loan2Grace || 0, loan2GraceMax)}
+                      max={loan2GraceMax}
+                      onChange={e => up("loan2Grace", Math.max(0, +e.target.value || 0))} />
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, lineHeight: 1, marginTop: 2, color: C.text3 }}>
+                      <span>0 {loan2GraceUnit}</span>
+                      <span>{loan2GraceMax} {loan2GraceUnit}</span>
+                    </div>
+                  </div>
+                  <Segment value={loan2GraceUnit}
+                    onChange={u => setS(p => ({
+                      ...p,
+                      loan2GraceUnit: u,
+                      loan2Grace: Math.min(p.loan2Grace || 0, graceMaxFor(u, loan2YearsVal)),
+                    }))}
+                    options={[{ v: "mnd", label: "Mnd" }, { v: "år", label: "År" }]} />
+                </div>
+              </div>
+            </React.Fragment>
+          ) : (
+            <div style={{
+              flex: 1, minHeight: 0, borderRadius: 8, border: "1px dashed " + C.border,
+              background: C.zebra, display: "flex", alignItems: "center", justifyContent: "center",
+              padding: 16, textAlign: "center",
+            }}>
+              <span style={{ fontSize: 13, color: C.text2, lineHeight: 1.45 }}>
+                Skru på for å legge inn et fremtidig lån nr 2 i den avanserte nedbetalingsplanen.
+              </span>
+            </div>
+          )}
+        </Card>
+
+        <Card pad={16} style={{
+          gridColumn: 2, gridRow: 1,
+          display: "flex", flexDirection: "column", gap: 10, minHeight: 0,
+        }}>
+          <MultiLoanPaymentBars
+            mainPlan={adv}
+            topPlan={topPlan}
+            loan2Plan={loan2Plan}
+            s={s}
+            startCal={calYear0}
+          />
+        </Card>
+
+        <Card pad={16} style={{
+          gridColumn: "1 / -1", gridRow: 2,
+          display: "flex", flexDirection: "column", gap: 10, minHeight: 0,
+        }}>
+          <MultiLoanDebtBars plan={fullAdv} s={s} startCal={calYear0} />
+        </Card>
+      </div>
+    </div>
+  );
+
   /* ---------- fane: tillegg ---------- */
   const topTerm = topPlan ? topPlan.rows[0].term : 0;
   const mainTerm = adv.rows[0].term;
@@ -3411,7 +4167,7 @@ function App() {
     <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0 }}>
       <Help style={{ fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         <span style={{ fontWeight: 600, color: C.navy, fontSize: 13 }}>Flere funksjoner. </span>
-        Alder, inntekt, sikkerhet, topplån og stresstest av betjeningsevne. Bygger på grunnlån og valgene i Lån Avansert.
+        Alder, inntekt, sikkerhet, topplån og stresstest av betjeningsevne. Bygger på grunnlån og valgene i Avansert - rente.
       </Help>
       <div style={{
         display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)",
@@ -3642,7 +4398,6 @@ function App() {
   );
 
   /* ---------- fane: plan (avansert) ---------- */
-  const fullAdv = mergePlans(adv, topPlan);
   const fullEnd = fullAdv.rows[fullAdv.rows.length - 1].balance;
   const diff = fullAdv.totalPaid - base.totalPaid;
   const diffColor = diff > 0.5 ? C.red : diff < -0.5 ? C.blue : C.text2;
@@ -3650,6 +4405,9 @@ function App() {
   const advSub = (s.niborOn ? "Nibor + påslag" : s.stepsOn ? "trinnvis rente" : "flat rente")
     + (s.graceStepsOn ? " · tegnet avdragsfrihet" : "")
     + (s.topAmount > 0 ? " · topplån " + nok(s.topAmount) : "")
+    + (s.loan2On && s.loan2Amount > 0
+      ? " · lån nr 2 " + nok(s.loan2Amount) + " fra " + (new Date().getFullYear() + clamp(s.loan2StartYear || 1, 1, s.years) - 1)
+      : "")
     + " · " + s.years + " år · " + s.ppy + " terminer per år";
 
   const summaryPlain = summaryKind === "loan"
@@ -3686,10 +4444,11 @@ function App() {
       </div>
       <PlanTable plan={fullAdv} s={s} view={s.view} showRate />
       <Footnote>
-        Planen slår sammen grunnlån og eventuelt topplån. Avdrag går alltid til topplånet først
-        (markert i blått med «Topplån»), deretter til grunnlånet. Rentekolonnen er veid rente når lånene
-        har ulik rente. «Avdragsfri» gjelder grunnlånet. Avdragsfrihet på slutten gir restgjeld
-        i stedet for gjeldfrihet – løpetiden forlenges ikke.
+        Planen slår sammen lån nr 1 (grunnlån), eventuelt topplån og eventuelt lån nr 2.
+        Avdrag på topplån går først (blått). Lån nr 2 er et separat fremtidig lån (grønt) som
+        etableres fra valgt år og løper parallelt – ikke et topplån. Rentekolonnen er veid rente
+        når lånene har ulik rente. «Avdragsfri» gjelder lån nr 1. Avdragsfrihet på slutten gir
+        restgjeld i stedet for gjeldfrihet – løpetiden forlenges ikke.
       </Footnote>
     </Card>
   );
@@ -3727,11 +4486,24 @@ function App() {
         {tab === "graph" && graphTab}
         {tab === "adv" && advTab}
         {tab === "more" && moreTab}
+        {tab === "adv3" && adv3Tab}
         {tab === "advplan" && advPlanTab}
       </div>
 
       <IoCornerBtn label="input" side="left" onClick={() => setIoMode("in")} />
-      <IoCornerBtn label="output" side="right" onClick={() => setIoMode("out")} />
+      <div style={{
+        position: "absolute", bottom: 10, right: 16, zIndex: 20,
+        display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <IoCornerBtn label="output til mål og behov" onClick={() => setMalBehovOpen(true)} />
+        <IoCornerBtn label="output" onClick={() => setIoMode("out")} />
+      </div>
+      {malBehovOpen && (
+        <MalBehovDialog
+          rows={buildMalBehovRows(fullAdv, new Date().getFullYear(), 10)}
+          onClose={() => setMalBehovOpen(false)}
+        />
+      )}
       {ioMode && (
         <IoDialog key={ioMode} mode={ioMode} state={s}
           onClose={() => setIoMode(null)}
