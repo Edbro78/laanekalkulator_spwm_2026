@@ -3125,7 +3125,26 @@ function buildAdvSummaryPlain({ s, fullAdv, topPlan, topRate, perLabel, typeName
   if (s.graceStepsOn) push("Avdragsfrihet underveis: aktiv (tegnes i Avansert)");
   if (s.topAmount > 0) {
     push("Topplån: " + nok(s.topAmount) + " · rente " + pct(topRate));
-    push("Samlet lån: " + nok(s.amount + s.topAmount));
+  }
+  if (s.loan2On && s.loan2Amount > 0) {
+    const l2Start = clamp(s.loan2StartYear || 1, 1, s.years);
+    const l2Cal = new Date().getFullYear() + l2Start - 1;
+    const l2Years = loan2ResolvedYears(s);
+    const l2Rate = loan2ResolvedRate(s);
+    push("Lån nr 2: " + nok(s.loan2Amount)
+      + " · rente " + pct(l2Rate)
+      + (s.loan2Rate == null ? " (samme som lån nr 1)" : "")
+      + " · etableres " + l2Cal + " (år " + l2Start + " i planen)"
+      + " · nedbetalingstid " + l2Years + " år");
+    if (s.loan2Grace > 0) {
+      push("Lån nr 2 avdragsfrihet: " + s.loan2Grace + " "
+        + (s.loan2GraceUnit === "år" ? "år" : "måneder"));
+    }
+  }
+  if (s.topAmount > 0 || (s.loan2On && s.loan2Amount > 0)) {
+    push("Samlet lån: " + nok(
+      s.amount + (s.topAmount || 0) + (s.loan2On && s.loan2Amount > 0 ? s.loan2Amount : 0)
+    ));
   }
   push("Pant / sikkerhet: " + nok(s.assetValue)
     + (s.extraAsset > 0 ? " + tillegg " + nok(s.extraAsset) : ""));
@@ -3145,8 +3164,9 @@ function buildAdvSummaryPlain({ s, fullAdv, topPlan, topRate, perLabel, typeName
   push("— NEDBETALINGSPLAN PER ÅR —", "");
   push("År\tTerminbeløp\tRenter\tAvdrag\tRestgjeld\tRente");
   fullAdv.years.forEach(y => {
+    const mark = (y.grace ? "*" : "") + (y.loan2Pay ? "†" : "") + (y.topPay ? "‡" : "");
     push(
-      (y.year + (y.grace ? " *" : ""))
+      (y.year + (mark ? " " + mark : ""))
       + "\t" + nok(y.term)
       + "\t" + nok(y.interest)
       + "\t" + nok(y.principal)
@@ -3154,7 +3174,11 @@ function buildAdvSummaryPlain({ s, fullAdv, topPlan, topRate, perLabel, typeName
       + "\t" + pct(y.rate)
     );
   });
-  if (fullAdv.years.some(y => y.grace)) push("", "* = år med avdragsfrihet på grunnlånet");
+  const notes = [];
+  if (fullAdv.years.some(y => y.grace)) notes.push("* = år med avdragsfrihet på lån nr 1");
+  if (fullAdv.years.some(y => y.loan2Pay)) notes.push("† = år med avdrag på lån nr 2");
+  if (fullAdv.years.some(y => y.topPay)) notes.push("‡ = år med avdrag på topplån");
+  if (notes.length) push("", ...notes);
   push("", "Veiledende beregning. Faktiske betingelser avtales med banken.");
   return lines.join("\n");
 }
@@ -3169,15 +3193,92 @@ function AdvSummaryDialog({ onClose, plainText, subtitle, children }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const buildEmailHtml = () => {
+    const body = bodyRef.current ? bodyRef.current.innerHTML : "";
+    const title = subtitle || "Til e-post";
+    return (
+      '<div style="font-family:\'Hanken Grotesk\',Whitney,Arial,Helvetica,sans-serif;font-size:13px;color:#002359;line-height:1.45;max-width:720px;">'
+      + '<style type="text/css">'
+      + 'table{border-collapse:collapse;width:100%;}'
+      + 'th{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#667085;'
+      + 'text-align:right;padding:8px 10px;border-bottom:1px solid #EAECF0;background:#F9FAFB;}'
+      + 'td{font-size:12.5px;color:#002359;text-align:right;padding:7px 10px;border-bottom:1px solid #F2F4F7;'
+      + 'font-variant-numeric:tabular-nums;}'
+      + 'th.l,td.l{text-align:left;}'
+      + 'tfoot td{font-weight:600;border-top:1px solid #EAECF0;border-bottom:none;}'
+      + '</style>'
+      + '<div style="margin:0 0 16px;padding:0 0 12px;border-bottom:1px solid #EAECF0;">'
+      + '<div style="font-size:10px;font-weight:600;letter-spacing:.08em;color:#667085;text-transform:uppercase;">'
+      + "Låneoppsummering</div>"
+      + '<div style="font-size:16px;font-weight:500;color:#002359;letter-spacing:-.01em;">'
+      + String(title).replace(/</g, "&lt;") + "</div></div>"
+      + body
+      + "</div>"
+    );
+  };
+
+  const copyPlainFallback = () => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(plainText || "");
+    }
+    const ta = document.createElement("textarea");
+    ta.value = plainText || "";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    return Promise.resolve();
+  };
+
+  const copyViaSelection = () => new Promise((resolve, reject) => {
+    const el = bodyRef.current;
+    if (!el) return reject(new Error("missing body"));
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    try {
+      const ok = document.execCommand("copy");
+      sel.removeAllRanges();
+      if (ok) resolve();
+      else reject(new Error("execCommand failed"));
+    } catch (err) {
+      sel.removeAllRanges();
+      reject(err);
+    }
+  });
+
   const copy = () => {
     const done = () => { setCopied(true); setTimeout(() => setCopied(false), 1800); };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(plainText).then(done).catch(() => {
-        const ta = document.createElement("textarea");
-        ta.value = plainText; document.body.appendChild(ta); ta.select();
-        document.execCommand("copy"); document.body.removeChild(ta); done();
-      });
-    }
+    const html = buildEmailHtml();
+    const plain = plainText || (bodyRef.current ? bodyRef.current.innerText : "");
+
+    const writeRich = () => {
+      if (!navigator.clipboard || !window.ClipboardItem) return Promise.reject();
+      const htmlBlob = new Blob([html], { type: "text/html" });
+      const plainBlob = new Blob([plain], { type: "text/plain" });
+      try {
+        return navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": htmlBlob,
+            "text/plain": plainBlob,
+          }),
+        ]);
+      } catch (e) {
+        /* Safari vil ofte ha Promise-baserte blobs */
+        return navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": Promise.resolve(htmlBlob),
+            "text/plain": Promise.resolve(plainBlob),
+          }),
+        ]);
+      }
+    };
+
+    writeRich()
+      .then(done)
+      .catch(() => copyViaSelection().then(done).catch(() => copyPlainFallback().then(done).catch(done)));
   };
 
   return (
@@ -3276,7 +3377,29 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
   if (s.topAmount > 0) {
     loanRows.push(
       { label: "Topplån", value: nok(s.topAmount), note: "Rente " + pct(topRate) + " · nedbetales før grunnlånet" },
-      { label: "Samlet lån", value: nok(s.amount + s.topAmount), accent: C.blue },
+    );
+  }
+  if (s.loan2On && s.loan2Amount > 0) {
+    const l2Start = clamp(s.loan2StartYear || 1, 1, s.years);
+    const l2Cal = new Date().getFullYear() + l2Start - 1;
+    const l2Years = loan2ResolvedYears(s);
+    const l2Rate = loan2ResolvedRate(s);
+    loanRows.push(
+      { label: "Lån nr 2", value: nok(s.loan2Amount), accent: C.green,
+        note: "Rente " + pct(l2Rate)
+          + (s.loan2Rate == null ? " (samme som lån nr 1)" : "")
+          + " · etableres " + l2Cal + " (år " + l2Start + ")"
+          + " · " + l2Years + " års nedbetaling"
+          + (s.loan2Grace > 0
+            ? " · avdragsfri " + s.loan2Grace + " " + (s.loan2GraceUnit === "år" ? "år" : "mnd")
+            : "") },
+    );
+  }
+  if (s.topAmount > 0 || (s.loan2On && s.loan2Amount > 0)) {
+    loanRows.push(
+      { label: "Samlet lån", value: nok(
+        s.amount + (s.topAmount || 0) + (s.loan2On && s.loan2Amount > 0 ? s.loan2Amount : 0)
+      ), accent: C.blue },
     );
   }
   loanRows.push(
@@ -3323,8 +3446,8 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
           Hva er lagt inn i den avanserte planen?
         </div>
         <p style={{ margin: "0 0 10px", fontSize: 12.5, lineHeight: 1.5, color: C.text2 }}>
-          Parametrene under inkluderer grunnlån, eventuell Nibor-kobling eller trinnvis rente,
-          avdragsfrihet, topplån og sikkerhet. {debtNote}
+          Parametrene under inkluderer lån nr 1 (grunnlån), eventuell Nibor-kobling eller trinnvis rente,
+          avdragsfrihet, topplån, lån nr 2 og sikkerhet. {debtNote}
         </p>
         <ReportKV rows={loanRows} />
       </section>
@@ -3339,7 +3462,12 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
         </div>
         <p style={{ margin: "0 0 10px", fontSize: 12.5, lineHeight: 1.5, color: C.text2 }}>
           Tabellen viser samlet terminbeløp, renter, avdrag og restgjeld ved utgangen av hvert år
-          {topPlan ? " (grunnlån og topplån slått sammen)" : ""}.
+          {(topPlan || (s.loan2On && s.loan2Amount > 0))
+            ? " (lån nr 1"
+              + (topPlan ? ", topplån" : "")
+              + (s.loan2On && s.loan2Amount > 0 ? " og lån nr 2" : "")
+              + " slått sammen)"
+            : ""}.
         </p>
         <div style={{ border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden" }}>
           <table className="tbl" style={{ margin: 0 }}>
@@ -3380,7 +3508,8 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
                 <td className="l">Totalt</td>
                 <td>{nok(fullAdv.totalPaid - (fullAdv.setupDeed || 0))}</td>
                 <td>{nok(fullAdv.totalInterest)}</td>
-                <td>{nok(Math.max(0, (s.amount + (s.topAmount || 0)) - Math.max(0, endBal)))}</td>
+                <td>{nok(Math.max(0, (s.amount + (s.topAmount || 0)
+                  + (s.loan2On && s.loan2Amount > 0 ? s.loan2Amount : 0)) - Math.max(0, endBal)))}</td>
                 <td>{nok(endBal)}</td>
                 <td></td>
               </tr>
@@ -3391,7 +3520,7 @@ function AdvSummaryBody({ s, fullAdv, topPlan, topRate, perLabel, typeName,
 
       <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: C.text3 }}>
         Veiledende beregning fra Söderberg &amp; Partners’ lånekalkulator. Faktiske betingelser
-        avtales med banken. Bruk «Kopier til e-post» for en ren tekstversjon som limer godt inn i Outlook.
+        avtales med banken. «Kopier til e-post» tar med formatet (tabeller og overskrifter) til Outlook.
       </p>
     </div>
   );
@@ -3528,7 +3657,7 @@ function LoanSummaryBody({ s, base, perLabel, typeName }) {
 
       <p style={{ margin: 0, fontSize: 11.5, lineHeight: 1.5, color: C.text3 }}>
         Veiledende beregning fra Söderberg &amp; Partners’ lånekalkulator. Faktiske betingelser
-        avtales med banken. Bruk «Kopier til e-post» for en ren tekstversjon.
+        avtales med banken. «Kopier til e-post» tar med formatet (tabeller og overskrifter) til Outlook.
       </p>
     </div>
   );
