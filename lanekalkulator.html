@@ -284,8 +284,8 @@ function rateSeries(s, adv) {
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-/* Løpetiden kan velges fra 1 til 30 år */
-const YEARS_MIN = 1, YEARS_MAX = 30;
+/* Løpetiden kan velges fra 1 til 40 år */
+const YEARS_MIN = 1, YEARS_MAX = 40;
 
 /* Maks avdragsfrihet: 10 år / 120 mnd, men aldri hele løpetiden */
 function graceMaxFor(unit, years) {
