@@ -2932,6 +2932,207 @@ function MalBehovDialog({ rows, onClose }) {
   );
 }
 
+function parseMnokAmount(raw) {
+  const t = String(raw == null ? "" : raw).trim().toLowerCase();
+  if (!t) return null;
+  const mill = t.match(/([\d]+(?:[.,]\d+)?)\s*(m\s*nok|mnok|m\.?\s*nok|mill(?:ion)?(?:er)?)/i);
+  if (mill) {
+    const n = parseFloat(mill[1].replace(",", "."));
+    return Number.isFinite(n) ? Math.round(n * 1000000) : null;
+  }
+  const plain = t.replace(/\s/g, "").replace(/kr\.?/g, "").replace(",", ".");
+  const n = parseFloat(plain.replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(n)) return null;
+  /* Små tall uten «mnok» tolkes som millioner (f.eks. «10») */
+  if (n > 0 && n < 500) return Math.round(n * 1000000);
+  return Math.round(n);
+}
+
+function parseArbeidsprosessBlocks(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const blocks = [];
+  let cur = [];
+  const isHeader = line => /^(boliglån|ny\s*gjeld|lån\s*nr\.?\s*2|topplån|annet\s*lån|gjeld)\b/i.test(line.trim());
+  lines.forEach(line => {
+    const t = line.trim();
+    if (!t) {
+      if (cur.length) { blocks.push(cur); cur = []; }
+      return;
+    }
+    if (isHeader(t) && cur.length) {
+      blocks.push(cur);
+      cur = [t];
+    } else cur.push(t);
+  });
+  if (cur.length) blocks.push(cur);
+  return blocks;
+}
+
+function parseArbeidsprosessLoanBlock(lines) {
+  const out = {
+    amount: null, years: null, rate: null,
+    type: "annuitet", grace: 0, graceUnit: "år",
+  };
+  lines.forEach(line => {
+    const raw = line.trim();
+    if (!raw) return;
+    const colon = raw.search(/[:：]/);
+    const key = (colon >= 0 ? raw.slice(0, colon) : raw).trim().toLowerCase();
+    const val = (colon >= 0 ? raw.slice(colon + 1) : "").trim();
+
+    if (/boliglån|ny\s*gjeld|lånebeløp|beløp|gjeld/.test(key)) {
+      const amt = parseMnokAmount(val || raw);
+      if (amt != null) out.amount = amt;
+      return;
+    }
+    if (/lånetype|type/.test(key)) {
+      if (/serie/i.test(val)) out.type = "serie";
+      else out.type = "annuitet";
+      const g = val.match(/avdragsfri(?:het)?\s*(\d+)\s*(år|aar|mnd|måned(?:er)?)?/i);
+      if (g) {
+        out.grace = +g[1];
+        out.graceUnit = g[2] && /mnd|måned/i.test(g[2]) ? "mnd" : "år";
+      }
+      return;
+    }
+    if (/lånetid|nedbetaling|løpetid|löpetid/.test(key)) {
+      const y = val.match(/(\d+)/);
+      if (y) out.years = +y[1];
+      return;
+    }
+    if (/rente/.test(key)) {
+      const r = parsePctNo(val);
+      if (r != null) out.rate = r;
+    }
+  });
+  return out;
+}
+
+function applyArbeidsprosessDelI(text, prev) {
+  const blocks = parseArbeidsprosessBlocks(text)
+    .map(parseArbeidsprosessLoanBlock)
+    .filter(b => b.amount != null || b.years != null || b.rate != null);
+  if (!blocks.length) throw new Error("Ingen lån funnet");
+
+  const main = blocks[0];
+  const next = { ...prev };
+
+  if (main.amount != null) next.amount = clamp(main.amount, 0, 100000000);
+  if (main.years != null) next.years = clamp(Math.round(main.years), YEARS_MIN, YEARS_MAX);
+  if (main.rate != null) next.rate = clamp(main.rate, 0, 30);
+  if (main.type) next.type = main.type === "serie" ? "serie" : "annuitet";
+  next.graceUnit = main.graceUnit === "mnd" ? "mnd" : "år";
+  next.grace = clamp(Math.round(main.grace || 0), 0, graceMaxFor(next.graceUnit, next.years));
+  next.debtFreeAge = next.age + next.years;
+  next.stepsOn = false;
+  next.niborOn = false;
+  next.yearRates = null;
+  next.graceStepsOn = false;
+  next.graceYears = null;
+
+  if (blocks.length >= 2 && blocks[1].amount != null) {
+    const l2 = blocks[1];
+    next.loan2On = true;
+    next.loan2Amount = clamp(l2.amount, 0, 50000000);
+    next.loan2StartYear = 1;
+    next.loan2Years = l2.years != null
+      ? clamp(Math.round(l2.years), YEARS_MIN, YEARS_MAX)
+      : loan2RemainingYears(next);
+    next.loan2Rate = l2.rate != null ? clamp(l2.rate, 0, 30) : null;
+    next.loan2GraceUnit = l2.graceUnit === "mnd" ? "mnd" : "år";
+    next.loan2Grace = clamp(
+      Math.round(l2.grace || 0),
+      0,
+      graceMaxFor(next.loan2GraceUnit, next.loan2Years)
+    );
+    next.tab = "adv3";
+  } else {
+    next.loan2On = false;
+    next.loan2Amount = 0;
+    next.loan2Grace = 0;
+    next.tab = "calc";
+  }
+
+  next.grace = Math.min(next.grace, graceMaxFor(next.graceUnit, next.years));
+  return next;
+}
+
+function ArbeidsprosessDialog({ state, onClose, onApply }) {
+  const [text, setText] = useState("");
+  const [err, setErr] = useState("");
+  const areaRef = useRef(null);
+
+  useEffect(() => {
+    if (areaRef.current) areaRef.current.focus();
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const apply = () => {
+    try {
+      onApply(applyArbeidsprosessDelI(text, state));
+      onClose();
+    } catch (e) {
+      setErr("Kunne ikke lese teksten. Lim inn boliglån (og eventuelt ny gjeld) i formatet fra Arbeidsprosess del I.");
+    }
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Input fra Arbeidsprosess del I"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 100, background: "rgba(16,24,40,.45)",
+        display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+      }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: "min(560px, 100%)", maxHeight: "min(720px, 90vh)",
+        background: "#fff", borderRadius: 12, border: "1px solid " + C.border,
+        boxShadow: "0 16px 40px rgba(16,24,40,.18)",
+        display: "flex", flexDirection: "column", overflow: "hidden",
+      }}>
+        <div style={{
+          padding: "14px 18px 10px", display: "flex", alignItems: "flex-start",
+          justifyContent: "space-between", gap: 12, borderBottom: "1px solid " + C.border,
+        }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 600, color: C.navy }}>
+              Input fra Arbeidsprosess del I
+            </div>
+            <Help style={{ marginTop: 2 }}>
+              Lim inn ett eller to lån. Første blokk blir lån nr 1; eventuell «NY GJELD» blir lån nr 2.
+            </Help>
+          </div>
+          <button type="button" className="lnk" onClick={onClose} aria-label="Lukk">Lukk</button>
+        </div>
+        <div style={{ padding: 16, flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+          <textarea ref={areaRef} value={text}
+            onChange={e => { setText(e.target.value); setErr(""); }}
+            placeholder={"BOLIGLÅN: 10 mnok\nlånetype: Annuitetslån\nLånetid (år) : 25 år\nrentekostnader: 4%\n\nNY GJELD: 11,75 mnok\nlånetype: Avdragsfrihet 3 år\nLånetid (år) : 25 år\nrentekostnader: 4%"}
+            spellCheck={false}
+            style={{
+              width: "100%", flex: 1, minHeight: 280, resize: "vertical",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+              fontSize: 12.5, lineHeight: 1.5, color: C.navy,
+              border: "1px solid " + C.inputBorder, borderRadius: 8, padding: 14,
+              background: "#fff",
+            }} />
+          {err && <div style={{ fontSize: 12, color: C.red }}>{err}</div>}
+        </div>
+        <div style={{
+          padding: "12px 16px", borderTop: "1px solid " + C.border,
+          display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10,
+        }}>
+          <button type="button" onClick={apply} style={{
+            padding: "8px 14px", borderRadius: 6, border: "none", cursor: "pointer",
+            background: C.blue, color: "#fff", fontWeight: 600, fontSize: 13, fontFamily: "inherit",
+          }}>Bruk</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function IoCornerBtn({ label, onClick, side, disabled }) {
   const [hover, setHover] = useState(false);
   const placed = !!side;
@@ -3671,6 +3872,7 @@ function App() {
   const [ioMode, setIoMode] = useState(null); /* "in" | "out" | null */
   const [summaryKind, setSummaryKind] = useState(null); /* null | "loan" | "adv" */
   const [malBehovOpen, setMalBehovOpen] = useState(false);
+  const [apOpen, setApOpen] = useState(false);
   const [niborCurve, setNiborCurve] = useState(() => NIBOR_FALLBACK.map(p => ({ ...p })));
   const up = (k, v) => setS(p => ({ ...p, [k]: v }));
 
@@ -4619,7 +4821,13 @@ function App() {
         {tab === "advplan" && advPlanTab}
       </div>
 
-      <IoCornerBtn label="input" side="left" onClick={() => setIoMode("in")} />
+      <div style={{
+        position: "absolute", bottom: 10, left: 16, zIndex: 20,
+        display: "flex", alignItems: "center", gap: 8,
+      }}>
+        <IoCornerBtn label="input" onClick={() => setIoMode("in")} />
+        <IoCornerBtn label="Input fra Arbeidsprosess del I" onClick={() => setApOpen(true)} />
+      </div>
       <div style={{
         position: "absolute", bottom: 10, right: 16, zIndex: 20,
         display: "flex", alignItems: "center", gap: 8,
@@ -4627,6 +4835,13 @@ function App() {
         <IoCornerBtn label="output til mål og behov" onClick={() => setMalBehovOpen(true)} />
         <IoCornerBtn label="output" onClick={() => setIoMode("out")} />
       </div>
+      {apOpen && (
+        <ArbeidsprosessDialog
+          state={s}
+          onClose={() => setApOpen(false)}
+          onApply={next => setS(next)}
+        />
+      )}
       {malBehovOpen && (
         <MalBehovDialog
           rows={buildMalBehovRows(fullAdv, new Date().getFullYear(), 10)}
